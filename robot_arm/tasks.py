@@ -2,7 +2,7 @@
 
 - "panda": the Panda ball-in-cup task.
 - "g1-place": the G1 places one cup of the pyramid (stage 0, 1 or 2; the observation says which).
-- "g1-toss": the G1 tosses the ball into the top cup of a built pyramid.
+- "g1-toss": the G1 picks the cap off the table and throws it into the top cup of a built pyramid.
 
 Evaluation takes a checkpoint path so it can run in worker processes.
 """

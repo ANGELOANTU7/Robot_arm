@@ -1,4 +1,4 @@
-"""Cup pyramid geometry and the success checks for building it and getting the ball in."""
+"""Cup pyramid geometry and the success checks for building it and getting the cap in."""
 
 from dataclasses import dataclass
 
@@ -34,7 +34,7 @@ class PyramidLayout:
 
     @property
     def mouth_center(self) -> np.ndarray:
-        """Centre of the top cup's mouth: where the ball must go."""
+        """Centre of the top cup's mouth: where the cap must go."""
         return self.top + [0, 0, G1_CFG.cup.height]
 
 

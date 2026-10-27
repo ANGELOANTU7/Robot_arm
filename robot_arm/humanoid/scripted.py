@@ -163,7 +163,7 @@ class TossExpert:
 
     # Defaults from a parameter sweep with the aim calibrated over random layouts (see the README).
     def __init__(self, cfg: G1TaskConfig = G1_CFG, flight_time: float = 0.30, release_dist: float = 0.12,
-                 release_height: float = 0.08, release_bearing: float = 0.0, windup: float = 0.15,
+                 release_height: float = 0.08, release_bearing: float = 0.05, windup: float = 0.18,
                  speed_gain: float = 1.0, aim_offset=(0.0, 0.0, 0.0), carry_time: float = 0.05,
                  close_steps: int = 6, pinch_depth: float = 0.008):
         self.cfg = cfg
@@ -175,7 +175,7 @@ class TossExpert:
 
     def reset(self):
         self.phase, self.timer = "rise", 0
-        self.plan, self.aimed = None, False
+        self.plan, self.aimed, self.retries = None, False, 0
 
     @staticmethod
     def base_axis(obs: np.ndarray) -> np.ndarray:
@@ -215,7 +215,9 @@ class TossExpert:
         self.timer += 1
         grip, speed = -1.0, cfg.max_step
         near = lambda p, tol: np.linalg.norm(p - site) < tol  # noqa: E731
-        aligned = np.linalg.norm(rotation_error(hand, frame)) < 0.07
+        rot_err = np.linalg.norm(rotation_error(hand, frame))
+        # Aligned, or as close as the joint limits allow (a few degrees off): don't wait for it forever.
+        aligned = rot_err < 0.07 or (rot_err < 0.12 and self.timer > 20)
 
         # Straight up, across to above the cap, and only then turn the fingers down: turning over the pyramid
         # would sweep the fingers into the top cup.
@@ -239,7 +241,7 @@ class TossExpert:
         if self.phase == "turn":
             goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), frame
             if aligned:
-                self.phase = "over"
+                self.phase, self.timer = "over", 0
         if self.phase == "over":
             goal, frame_cmd = self.site_for(pinch_at_cap + [0, 0, 0.06], frame), frame
             if near(goal, 0.01) and aligned:
@@ -256,8 +258,11 @@ class TossExpert:
                 self.lift_goal = self.site_for(cap + [0, 0, 0.10], frame)
         if self.phase == "lift":
             goal, frame_cmd, grip = self.lift_goal, frame, 1.0
-            if near(goal, 0.015) or site[2] > self.lift_goal[2] - 0.03:
-                self.phase = "windup"
+            if site[2] > self.lift_goal[2] - 0.06 and cap[2] < T + 2 * cfg.cap_half_height + 0.004 and \
+                    self.retries < 2:
+                self.phase, self.timer, self.retries = "over", 0, self.retries + 1  # the cap stayed behind: retry
+            elif near(goal, 0.015) or site[2] > self.lift_goal[2] - 0.03:
+                self.phase, self.timer = "windup", 0
         if self.phase == "windup":
             if not self.aimed:  # aim at the top cup as it is now: it may have settled since the plan was made
                 self.plan, self.aimed = self.release_plan(mouth, self.base_axis(obs)), True

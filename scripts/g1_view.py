@@ -1,4 +1,4 @@
-"""Watch the G1 build the cup pyramid and toss the ball in the interactive MuJoCo viewer (needs a display).
+"""Watch the G1 build the cup pyramid and throw the cap in, in the interactive MuJoCo viewer (needs a display).
 
     python scripts/g1_view.py
     python scripts/g1_view.py --policy "place=runs/g1_place_bc/policy.pt,toss=runs/g1_toss_ppo/policy.pt"

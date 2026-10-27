@@ -292,12 +292,14 @@ class PlaceTracker:
 
 # ---------------------------------------------------------------------------------------------- tossing
 
-# Where the G1's throw works (from simulated sweeps with the aim calibrated; 53-91% success inside the box):
-# human styles are clipped to it. The throw is a precision skill: the ball has 1 cm of clearance in the mouth.
-# Releases further right (bearing -2.28 and beyond) need a wind-up the arm can't reach, flatter arcs and
-# shorter wind-ups are much less accurate.
-TOSS_BOUNDS = {"release_dist": (0.28, 0.32), "release_height": (0.14, 0.18), "release_bearing": (-2.42, -2.37),
-               "flight_time": (0.31, 0.34), "windup": (0.16, 0.19)}
+# Where the G1's throw works (from simulated sweeps on random layouts, before aim calibration: 58-96% success at
+# the corners of the box, 24 layouts each): human styles are clipped to it. Releases closer than 10 cm let go
+# within the 5 cm minimum or bump the pyramid with the fingers; from 20 cm on, the cap mostly misses, and flights
+# of 0.38 s are less accurate. Releasing slightly off the base cups' line on the robot's side (positive bearing)
+# works better than the other side. Short flights with a long wind-up throw well on a pre-built pyramid but miss
+# after the robot has built it (the arm arrives in another configuration), so the flight time stays near 0.3 s.
+TOSS_BOUNDS = {"release_dist": (0.10, 0.16), "release_height": (0.06, 0.12), "release_bearing": (0.0, 0.10),
+               "flight_time": (0.26, 0.32), "windup": (0.14, 0.18)}
 
 
 def throw_style(demo: SkillDemo, scale: float = ARM_SCALE) -> dict:
@@ -346,11 +348,11 @@ def _toss_episode(args):
     prev, miss = obs[OBS_CAP].copy(), None
     for _ in range(env.max_steps):
         obs, _, terminated, truncated, info = env.step(expert(obs))
-        ball = obs[OBS_CAP]
-        if miss is None and env.release_distance is not None and prev[2] >= mouth[2] > ball[2]:
-            f = (prev[2] - mouth[2]) / (prev[2] - ball[2])
-            miss = (prev + f * (ball - prev) - mouth)[:2]
-        prev = ball.copy()
+        cap = obs[OBS_CAP]
+        if miss is None and env.release_distance is not None and prev[2] >= mouth[2] > cap[2]:
+            f = (prev[2] - mouth[2]) / (prev[2] - cap[2])
+            miss = (prev + f * (cap - prev) - mouth)[:2]
+        prev = cap.copy()
         if terminated or truncated:
             break
     outcome = "ok" if info["is_success"] else info["fail_reason"] or "timeout"
@@ -360,19 +362,20 @@ def _toss_episode(args):
 def calibrate_aim(params: dict, rounds: int = 3, episodes: int = 16, seed: int = 50_000, pool=None) -> dict:
     """Choose the aim offset of a throw style from simulated throws.
 
-    With aim a the ball comes down at m = a + e, where e is the style's aiming error. The ball only goes in for
-    m in a small region around the mouth. The region is not centred on the mouth: a long ball can bounce in off
-    the far wall, while a short one hits the near rim. So the throws aim e's mean at the centre of the throws
-    that went in, using every round's throws. With fewer than 3 hits so far they aim at the mouth centre.
+    With aim a the cap comes down at m = a + e, where e is the style's aiming error. The cap only goes in for m
+    in a small region around the mouth. The region is not centred on the mouth: a long throw can bounce in off
+    the far wall, while a short one hits the near rim. So each round aims e's mean at the centre of the throws
+    that went in so far (at the mouth centre with fewer than 3 hits). Every round throws on the same layouts,
+    and the aim with the best success rate is kept: with so few throws a round's correction can overshoot.
 
-    Returns the parameters with the new `aim_offset`, plus `aim_history`: the aim and the success rate of each
-    round. A style whose balls never come down near the cup keeps its aim; its release point is probably
+    Returns the parameters with that `aim_offset`, plus `aim_history`: the aim and the success rate of each
+    round. A style whose caps never come down near the cup keeps its aim; its release point is probably
     unreachable."""
     aim = np.array(params.get("aim_offset", (0.0, 0.0, 0.0)), float)
     history, errors, hits = [], [], []
-    for r in range(rounds):
+    for _ in range(rounds):
         p = {**params, "aim_offset": tuple(aim)}
-        jobs = [(p, seed + r * episodes + i) for i in range(episodes)]
+        jobs = [(p, seed + i) for i in range(episodes)]
         results = pool.map(_toss_episode, jobs) if pool is not None else list(map(_toss_episode, jobs))
         history.append((tuple(round(float(a), 3) for a in aim), float(np.mean([s for s, _, _ in results]))))
         for success, miss, _ in results:
@@ -384,7 +387,8 @@ def calibrate_aim(params: dict, rounds: int = 3, episodes: int = 16, seed: int =
             break
         centre = np.mean(hits, axis=0) if len(hits) >= 3 else np.zeros(2)
         aim[:2] += 0.8 * (centre - np.mean(errors, axis=0) - aim[:2])
-    return {**params, "aim_offset": tuple(float(a) for a in aim), "aim_history": history}
+    best = max(history, key=lambda h: h[1])  # the earliest of equals
+    return {**params, "aim_offset": tuple(float(a) for a in best[0]), "aim_history": history}
 
 
 # ---------------------------------------------------------------------------------------------- rollouts
