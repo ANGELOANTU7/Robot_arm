@@ -178,7 +178,7 @@ class G1PyramidEnv(gym.Env):
         return self.cfg.toss_max_step if self.stage == 3 else self.cfg.max_step
 
     def step(self, action):
-        a = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
+        a = np.clip(np.nan_to_num(np.asarray(action, dtype=np.float64)), -1.0, 1.0)
         cfg = self.cfg
         # Actions move a stored command pose, so a zero action holds the arm still and a stop is a real stop.
         # A leash keeps the command near the actual hand (e.g. when pushing against the table).

@@ -43,6 +43,7 @@ class PPOConfig:
     bc_min: float = 0.02
     bc_batch: int = 1024
     min_log_std: float = -3.0
+    init_std: float = 0.0  # > 0: start exploring with this std instead of the checkpoint's (a throw needs little)
     eval_every: int = 20
     eval_episodes: int = 50
     eval_workers: int = 4  # processes for the G1 evaluations
@@ -66,6 +67,9 @@ def train_ppo(init_checkpoint: str | Path, demos_path: str | Path | None, out_di
 
     model = ActorCritic.load(init_checkpoint, device)
     spec = get_task(model.task)
+    if cfg.init_std > 0:
+        with torch.no_grad():
+            model.log_std.fill_(float(np.log(cfg.init_std)))
 
     def evaluate_model(name: str) -> dict:
         model.save(out_dir / name, source="ppo")

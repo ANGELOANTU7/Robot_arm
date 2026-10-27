@@ -71,8 +71,13 @@ class DemoDataset:
 
     @classmethod
     def load(cls, path: str | Path) -> "DemoDataset":
-        z = np.load(path)
-        return cls(z["obs"], z["actions"], z["episode"])
+        """One dataset, or several joined with commas ("a.npz,b.npz"; episode ids are kept apart)."""
+        obs, actions, episode, offset = [], [], [], 0
+        for part in str(path).split(","):
+            z = np.load(part.strip())
+            obs.append(z["obs"]), actions.append(z["actions"]), episode.append(z["episode"] + offset)
+            offset = int(episode[-1].max()) + 1
+        return cls(np.concatenate(obs), np.concatenate(actions), np.concatenate(episode))
 
     def split(self, val_fraction: float = 0.1, seed: int = 0) -> tuple["DemoDataset", "DemoDataset"]:
         """Split by episode so validation layouts are unseen."""

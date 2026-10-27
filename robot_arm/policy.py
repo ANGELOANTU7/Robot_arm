@@ -33,6 +33,7 @@ class ActorCritic(nn.Module):
         super().__init__()
         self.hidden, self.layers = hidden, layers
         self.obs_dim, self.act_dim, self.grip_obs, self.task = obs_dim, act_dim, grip_obs, task
+        self.fast_weight = 10.0 if task == "g1-toss" else 1.0  # see bc_loss
         self.actor = mlp([obs_dim] + [hidden] * layers + [act_dim], out_gain=0.01)
         self.critic = mlp([obs_dim] + [hidden] * layers + [1], out_gain=1.0)
         self.log_std = nn.Parameter(torch.full((act_dim,), -1.0))
@@ -78,15 +79,21 @@ class ActorCritic(nn.Module):
 
 
 def bc_loss(model: "ActorCritic", obs: torch.Tensor, act: torch.Tensor, switch_weight: float = 20.0) -> torch.Tensor:
-    """MSE to the demo actions, with the rare gripper open/close switches upweighted.
+    """MSE to the demo actions, with rare but decisive steps upweighted.
 
-    Each demo has only two switches (close on the object, open at the target) among ~150 steps; without the extra
-    weight the regressed gripper output drifts towards "keep doing what you did" right where it must switch.
+    - Gripper switches: each demo has only two (close on the object, open at the target) among ~150 steps.
+      Without the extra weight the regressed gripper output drifts towards "keep doing what you did" right
+      where it must switch.
+    - Fast steps (tasks with `fast_weight` > 1, i.e. the toss): the throw itself is a handful of steps after a
+      long, slow approach, and its precision decides everything.
     """
     err = (model.mean_action(obs) - act) ** 2
     switch = (obs[:, model.grip_obs] > 0) != (act[:, -1] > 0)
     w = torch.ones_like(err)
     w[:, -1] = 1.0 + (switch_weight - 1.0) * switch.float()
+    if model.fast_weight > 1:
+        fast = act[:, :3].norm(dim=-1) > 0.3
+        w = w * (1.0 + (model.fast_weight - 1.0) * fast.float())[:, None]
     return (err * w).sum() / w.sum()
 
 

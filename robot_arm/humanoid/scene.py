@@ -124,7 +124,7 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
                    pos=[cx, cy, cfg.table_height / 2], rgba=[0.55, 0.42, 0.3, 1],
                    contype=OBJ_TYPE, conaffinity=OBJ_AFF, friction=[0.8, 0.01, 0.001])
 
-    colors = [[0.85, 0.15, 0.15, 1], [0.85, 0.15, 0.15, 1], [0.95, 0.75, 0.1, 1]]
+    colors = [[0.15, 0.35, 0.85, 1], [0.15, 0.65, 0.25, 1], [0.95, 0.75, 0.1, 1]]  # as in the recording guide
     for name, rgba in zip(CUP_NAMES, colors):
         add_cup(world, name, cfg.cup, rgba)
 

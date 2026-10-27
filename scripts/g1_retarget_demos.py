@@ -62,6 +62,8 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-calibrate", action="store_true", help="skip the per-style aim calibration")
     p.add_argument("--styles", type=Path, help="reuse throw styles saved by an earlier run (g1_styles.json)")
+    p.add_argument("--task-mix", default="full=0.5,place=0.15,toss=0.35",
+                   help="share of episodes per env task, e.g. toss=1 for more toss data only")
     p.add_argument("--videos", type=int, default=1, help="render this many demos per skill on the G1")
     args = p.parse_args()
 
@@ -77,7 +79,8 @@ def main():
         print(f"  {demo.info['name']}: style {style['human']} -> aim {np.round(style['aim_offset'][:2], 3)}, "
               f"calibration success {[h[1] for h in hist]}")
 
-    data = generate_g1(demos, styles, args.episodes, args.noise, args.clean_fraction, seed=args.seed,
+    mix = tuple((k, float(v)) for k, v in (item.split("=") for item in args.task_mix.split(",")))
+    data = generate_g1(demos, styles, args.episodes, args.noise, args.clean_fraction, task_mix=mix, seed=args.seed,
                        workers=args.workers)
     summary = save_dataset(data, args.out, styles, {"human": str(args.human), "episodes": args.episodes,
                                                     "noise": args.noise})
