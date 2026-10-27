@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot_arm"
+version = "0.1.0"
+description = "Teach a simulated Franka Panda to pick a ball and drop it in a cup from your own videos (MuJoCo)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.2",
+    "numpy",
+    "scipy",
+    "gymnasium>=1.0",
+    "torch",
+    "opencv-python>=4.8",
+    "mediapipe>=0.10.14",
+    "imageio[ffmpeg]",
+    "matplotlib",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["robot_arm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

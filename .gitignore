@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Downloaded robot model (fetched by robot_arm/assets.py)
+third_party/
+
+# Your recordings and everything derived from them
+data/videos/
+data/processed/
+runs/
+
+# MediaPipe model (downloaded on first use)
+*.task
