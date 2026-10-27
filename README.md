@@ -1,4 +1,9 @@
-# Robot_arm: a simulated Panda learns to drop a ball in a cup from your phone videos
+# Robot_arm: robots that learn cup tasks from your phone videos
+
+> **New: Unitree G1 humanoid cup pyramid** (work in progress). The G1 (Dex3 hands, pelvis fixed) builds a
+> 3-cup pyramid (two cups mouth-down, one mouth-up on top) and tosses a ball into the top cup.
+> See [Humanoid cup pyramid](#humanoid-cup-pyramid-unitree-g1) below. The Panda pipeline documented first is
+> the original task and still works.
 
 You record yourself picking up a small ball, moving it over a cup and dropping it in. This project turns those
 clips into 3D hand trajectories, retargets them onto a **Franka Panda** arm in **MuJoCo**, trains a
@@ -153,3 +158,40 @@ tests/                              tests against synthetic ground truth
 - MJX / MuJoCo Playground for GPU-parallel RL, with thousands of environments.
 - Retarget the full hand (all 21 landmarks) onto a five-finger hand such as the Unitree G1 with an Inspire
   hand, reusing the same video pipeline.
+
+## Humanoid cup pyramid (Unitree G1)
+
+![G1 building the pyramid and tossing the ball](docs/g1_pyramid.jpg)
+
+`robot_arm/humanoid/` contains the G1 version of the task:
+
+- **Scene** (`scene.py`): Menagerie `unitree_g1/g1_with_hands.xml` with the free joint removed (the pelvis is
+  fixed at standing height), a table, three straight-walled cups (5.4/5.6 cm, 7.5 cm tall), a 3.6 cm 3 g ball
+  on a stand, and collisions only between the right arm/hand, the table and the objects.
+- **Control** (`controller.py`, `envs.py`): the action is a palm translation, a rotation and a 1-D grasp
+  synergy for the Dex3 hand. Damped least-squares IK runs over the waist and right arm with velocity
+  feed-forward. Commands integrate on a stored pose, so a zero action holds the arm still.
+- **Tasks**:
+  - `place` stage 0/1/2: put cup A, cup B or the top cup in place.
+  - `toss`: pyramid pre-built; the ball must leave the hand at least 20 cm from the cup.
+  - `full`: everything, with the stage advancing automatically.
+- **Scripted experts** (`scripted.py`):
+  - side power grasps for the cups;
+  - a palm-up scoop toss that carries the ball along its own ballistic arc before the hand drops away.
+
+| Scripted expert | Success |
+|---|---|
+| place cup A / cup B / top cup | 100% / 90% / 100% (20 layouts each) |
+| toss (pre-built pyramid) | 78% (40 layouts) |
+| full task (build + toss) | ~30-50% (pyramid built in ~80%) |
+
+```bash
+python scripts/g1_evaluate.py --task full --episodes 20
+python scripts/g1_view.py                      # needs a display
+```
+
+Simulation shortcuts, stated plainly:
+- The pelvis is fixed.
+- The ball stand does not collide with the hand (otherwise a finger hooks under it).
+- The cups and ball are sized for the Dex3 hand: a 3.6 cm ball and cups about 5.5 cm wide. Measure your real
+  ones and set `CupSpec` / `ball_radius` in `robot_arm/humanoid/config.py`.
