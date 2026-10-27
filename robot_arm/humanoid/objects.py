@@ -79,6 +79,15 @@ def base_spacing(cfg: G1TaskConfig = G1_CFG) -> float:
     return 2 * (cfg.cup.mouth_radius + cfg.cup.wall) + cfg.base_gap
 
 
+def wedge_height(cfg: G1TaskConfig = G1_CFG) -> float:
+    """Height above the table of the top cup's base when it sits centred in the V between the base cups' walls
+    (the cup height if the base cups stand so close that it rests on their bottoms)."""
+    c = cfg.cup
+    reach = base_spacing(cfg) / 2 - (c.bottom_radius + c.wall)  # base cup's axis -> top cup's bottom edge
+    r_mouth, r_bottom = c.mouth_radius + c.wall, c.bottom_radius + c.wall  # outer radii
+    return float(np.clip(c.height * (r_mouth - reach) / (r_mouth - r_bottom), 0.0, c.height))
+
+
 def base_pair_ok(data, cup_bodies, cfg: G1TaskConfig = G1_CFG) -> bool:
     """Both base cups mouth-down on the table, at a distance the top cup can rest across."""
     a, b, _ = cup_bodies

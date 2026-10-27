@@ -18,7 +18,7 @@ from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch
                                            rotvec_to_mat, site_for_pinch)
 from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout, base_pair_ok,
                                         base_spacing, cap_in_cup, cup_axis, cup_grasp_point, cup_in_place,
-                                        pyramid_standing, top_cup_resting)
+                                        pyramid_standing, top_cup_resting, wedge_height)
 from robot_arm.humanoid.scene import G1Ids, build_model
 
 N_STAGES = 4  # place cup0, place cup1, place cup2, toss
@@ -131,6 +131,8 @@ class G1PyramidEnv(gym.Env):
         for k in range(3):
             if k < prebuilt:
                 pos = self.layout.targets()[k] + np.array([*rng.normal(0, 0.002, 2), 0.0])
+                if k == 2:  # set into the V between the base cups, where a placed top cup ends up
+                    pos[2] = T + wedge_height(cfg) + 0.003
             else:
                 z = T + (cfg.cup.height if ORIENTATIONS[k] is DOWN else 0.0)
                 pos = np.array([*supply[k], z])

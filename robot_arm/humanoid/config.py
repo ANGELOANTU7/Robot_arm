@@ -33,7 +33,11 @@ class G1TaskConfig:
     # palm/fingers come near cup A while cup B is put down.
     pyramid_center: tuple[float, float] = (0.42, -0.06)
     pyramid_yaw: float = -2.356  # direction from base cup A to base cup B
-    base_gap: float = 0.004  # the base cups' mouths almost touch, so the top cup's base rests on both
+    # The base cups' mouths stand 2 cm apart, so the top cup's base sinks into the V between their walls and is
+    # held there. With the mouths almost touching, it only rests on two thin patches of the base cups' bottoms
+    # and the push of the opening fingers topples it front-to-back (scripted full task: 75% at 4 mm, 88-92% at
+    # 18-22 mm; at 28 mm it falls through).
+    base_gap: float = 0.02
     # Supply spots: each cup is approached from behind (-x) and the fingertips reach ~11 cm past it, so the top
     # cup waits further forward, clear of the corridors used for A and B.
     supply_cups: tuple[tuple[float, float], ...] = ((0.33, -0.20), (0.31, -0.37), (0.53, -0.28))  # A, B, top
@@ -43,9 +47,10 @@ class G1TaskConfig:
     # the two base cups' slanted walls rather than balancing on their bottoms, so it can sit lower and a little
     # off-centre and still stand (settling tests: up to 2.5 cm off-centre and 4 cm lower, upright). A fallen
     # top cup ends on the table (12 cm lower) or tilted.
-    spacing_tol: tuple[float, float] = (0.012, 0.016)  # base cups' centre distance vs nominal: below, above
+    # The base gap matters: the top cup only stays put for a narrow range of gaps (see base_gap).
+    spacing_tol: tuple[float, float] = (0.006, 0.008)  # base cups' centre distance vs nominal: below, above
     top_tol: float = 0.03  # top cup's horizontal distance from the base cups' midpoint
-    top_sink: float = 0.05  # how far the top cup may sit below the base cups' tops
+    top_sink: float = 0.06  # how far the top cup may sit below the base cups' tops (wedged: 2-4 cm)
 
     # Side power grasp: the hand points along its x axis, palm facing +y, hand z up. Grasp height as a
     # fraction of the cup's height (measured from the table side of the cup). The cups taper, so the base cups
