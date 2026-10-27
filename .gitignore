@@ -13,3 +13,4 @@ runs/
 
 # MediaPipe model (downloaded on first use)
 *.task
+MUJOCO_LOG.TXT
