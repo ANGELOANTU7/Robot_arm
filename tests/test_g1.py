@@ -7,7 +7,7 @@ import pytest
 from robot_arm.humanoid.config import G1_CFG
 from robot_arm.humanoid.controller import G1HandController, rotation_error
 from robot_arm.humanoid.envs import OBS_DIM, G1PyramidEnv
-from robot_arm.humanoid.objects import DOWN, UP, PyramidLayout, ball_in_cup, base_spacing, pyramid_standing
+from robot_arm.humanoid.objects import DOWN, UP, PyramidLayout, cap_in_cup, base_spacing, pyramid_standing
 from robot_arm.humanoid.scene import G1Ids, build_model
 from robot_arm.humanoid.scripted import PlaceExpert, hand_frame
 
@@ -21,7 +21,7 @@ def model_and_ids():
 def test_pelvis_is_fixed(model_and_ids):
     model, _ = model_and_ids
     free = [model.joint(j).name for j in range(model.njnt) if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
-    assert sorted(free) == ["ball_joint", "cup0_joint", "cup1_joint", "cup2_joint"]
+    assert sorted(free) == ["cap_joint", "cup0_joint", "cup1_joint", "cup2_joint"]
 
 
 def test_ik_reaches_side_grasp_poses(model_and_ids):
@@ -50,18 +50,18 @@ def test_pyramid_and_ball_checks(model_and_ids):
     layout = PyramidLayout.make(G1_CFG.pyramid_center, G1_CFG.pyramid_yaw)
     for k, (pos, quat) in enumerate(zip(layout.targets(), (DOWN, DOWN, UP))):
         _set_cup(data, ids, k, pos, quat)
-    b = ids.ball_qpos
+    b = ids.cap_qpos
     data.qpos[b:b + 3] = layout.top + [0, 0, 0.03]
     mujoco.mj_forward(model, data)
     assert np.isclose(np.linalg.norm(layout.base_a[:2] - layout.base_b[:2]), base_spacing())
     assert pyramid_standing(data, ids.cup_bodies)
-    assert ball_in_cup(data, ids.ball_body, ids.cup_bodies[2], G1_CFG.ball_radius)
+    assert cap_in_cup(data, ids.cap_body, ids.cup_bodies[2], G1_CFG.cap_radius)
 
     # Knock the top cup off: no longer standing, ball no longer inside.
     _set_cup(data, ids, 2, layout.top + [0.15, 0, -G1_CFG.cup.height], UP)
     mujoco.mj_forward(model, data)
     assert not pyramid_standing(data, ids.cup_bodies)
-    assert not ball_in_cup(data, ids.ball_body, ids.cup_bodies[2], G1_CFG.ball_radius)
+    assert not cap_in_cup(data, ids.cap_body, ids.cup_bodies[2], G1_CFG.cap_radius)
 
 
 def test_env_shapes_and_hold_still():
