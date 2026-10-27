@@ -1,6 +1,7 @@
 """Evaluate a policy: success rate on 100 fixed random layouts, plus a few rollout videos.
 
-    python scripts/evaluate.py --policy scripted
+    python scripts/evaluate.py --policy scripted                              # hand-written baseline
+    python scripts/evaluate.py --policy replay:data/processed/human           # retargeted human demos, no learning
     python scripts/evaluate.py --policy runs/bc/policy.pt --videos runs/bc/videos
 """
 
@@ -12,7 +13,7 @@ from robot_arm.evaluate import evaluate, load_policy
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--policy", default="scripted", help="'scripted' or a checkpoint path")
+    p.add_argument("--policy", default="scripted", help="'scripted', 'replay:<human demo dir>' or a checkpoint")
     p.add_argument("--episodes", type=int, default=100)
     p.add_argument("--videos", default=None, help="directory to save the first few rollouts as mp4")
     p.add_argument("--num-videos", type=int, default=3)

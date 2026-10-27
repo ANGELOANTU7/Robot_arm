@@ -9,10 +9,14 @@ from robot_arm.env import PandaBallCupEnv
 
 
 def load_policy(name: str, device: str = "cpu"):
-    """'scripted' or a path to a checkpoint saved by bc.py / ppo.py."""
+    """'scripted', 'replay:<folder of human demos>', or a checkpoint saved by bc.py / ppo.py."""
     if name == "scripted":
         from robot_arm.scripted import ScriptedPolicy
         return ScriptedPolicy()
+    if name.startswith("replay:"):
+        from robot_arm.dataset import load_human_demos
+        from robot_arm.retarget import ReplayPolicy
+        return ReplayPolicy(load_human_demos(name.split(":", 1)[1]))
     from robot_arm.policy import load_checkpoint
     return load_checkpoint(name, device=device)
 

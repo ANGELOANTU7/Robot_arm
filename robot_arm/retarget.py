@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from robot_arm.config import CFG, TaskConfig
-from robot_arm.env import OBS_BALL, OBS_TCP, PandaBallCupEnv, sample_layout
+from robot_arm.env import OBS_BALL, OBS_CUP, OBS_TCP, PandaBallCupEnv, sample_layout
 from robot_arm.synthetic import min_jerk
 from robot_arm.video.reconstruct import HumanDemo
 
@@ -93,17 +93,21 @@ class TrackingExpert:
     """Follows a RobotPlan in closed loop.
 
     The plan's clock only advances while the gripper keeps up with it, the approach follows the ball if it has
-    been nudged, and the gripper only closes once it is actually around the ball.
+    been nudged, the gripper only closes once it is actually around the ball, and it opens as soon as the
+    carried ball is over the cup. Triggering both gripper events on the state (rather than on the human's timing,
+    e.g. a pause over the cup before letting go) keeps the labels consistent, so a cloned policy cannot get stuck
+    hovering with the ball.
     """
 
     def __init__(self, plan: RobotPlan, cfg: TaskConfig = CFG, lag_tol: float = 0.03, grasp_tol: float = 0.012,
-                 close_steps: int = 8):
+                 close_steps: int = 8, release_tol: float = 0.015):
         self.plan, self.cfg = plan, cfg
         self.lag_tol, self.grasp_tol, self.close_steps = lag_tol, grasp_tol, close_steps
+        self.release_tol = release_tol
         self.reset()
 
     def reset(self):
-        self.idx, self.ball0, self.closing = 0, None, 0
+        self.idx, self.ball0, self.closing, self.released = 0, None, 0, False
 
     @property
     def grasping(self) -> bool:
@@ -111,12 +115,17 @@ class TrackingExpert:
         return self.idx == self.plan.grasp_idx and self.closing < self.close_steps
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
-        plan = self.plan
-        tcp, ball = obs[OBS_TCP], obs[OBS_BALL]
+        plan, cfg = self.plan, self.cfg
+        tcp, ball, cup = obs[OBS_TCP], obs[OBS_BALL], obs[OBS_CUP]
         if self.ball0 is None:
             self.ball0 = ball.copy()
+        over_cup = (np.linalg.norm(ball[:2] - cup[:2]) < self.release_tol
+                    and ball[2] > cfg.cup_height + cfg.ball_radius)
+        if not self.released and self.idx > plan.grasp_idx and over_cup:
+            self.released = True
+            self.idx = max(self.idx, plan.release_idx)
         wp = plan.waypoints[self.idx].copy()
-        closed = bool(plan.closed[self.idx])
+        closed = bool(plan.closed[self.idx]) and not self.released
         if self.idx < plan.grasp_idx:
             wp += ball - self.ball0  # follow the ball if it moved
 
@@ -129,7 +138,7 @@ class TrackingExpert:
         elif np.linalg.norm(wp - tcp) < self.lag_tol or self.idx >= plan.release_idx:
             self.idx = min(self.idx + 1, len(plan.waypoints) - 1)
 
-        delta = np.clip((wp - tcp) / self.cfg.max_step, -1.0, 1.0)
+        delta = np.clip((wp - tcp) / cfg.max_step, -1.0, 1.0)
         return np.concatenate([delta, [1.0 if closed else -1.0]]).astype(np.float32)
 
 
@@ -167,3 +176,23 @@ def rollout(env: PandaBallCupEnv, demo: HumanDemo, ball_xy, cup_xy, rng: np.rand
         if success_steps > after_success or terminated or truncated:
             break
     return np.array(observations), np.array(labels), bool(info["is_success"]), frames
+
+
+class ReplayPolicy:
+    """Baseline without learning: retarget a human demo (round-robin) to whatever layout the episode shows."""
+
+    def __init__(self, demos: list[HumanDemo], cfg: TaskConfig = CFG):
+        self.demos, self.cfg, self.k = demos, cfg, 0
+        self.expert = None
+
+    def reset(self):
+        self.expert = None
+
+    def __call__(self, obs: np.ndarray) -> np.ndarray:
+        if self.expert is None:
+            demo = self.demos[self.k % len(self.demos)]
+            self.k += 1
+            plan = retarget(demo, obs[OBS_BALL][:2], obs[OBS_CUP][:2], obs[OBS_TCP], self.cfg,
+                            max_duration=self.cfg.episode_seconds - 1.0)
+            self.expert = TrackingExpert(plan, self.cfg)
+        return self.expert(obs)

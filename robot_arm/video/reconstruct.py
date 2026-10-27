@@ -119,10 +119,13 @@ def reconstruct(raw: RawTrack, camera: Camera, ball_radius: float = 0.02, cup_ra
     T = len(raw.t)
     fps = 1 / np.median(np.diff(raw.t))
     hand_ok = ~np.isnan(raw.hand_px).any(axis=(1, 2))
-    if hand_ok.sum() < 0.5 * T:
+    if hand_ok.sum() < max(10, 0.5 * fps):
         raise RuntimeError(f"Hand detected in only {hand_ok.sum()}/{T} frames.")
-    # Trim to the span where the hand is visible.
+    # Trim to the span where the hand is visible; inside it, most frames need a detection.
     first, last = np.nonzero(hand_ok)[0][[0, -1]]
+    if hand_ok[first:last + 1].mean() < 0.6:
+        raise RuntimeError(f"Hand lost in {100 * (1 - hand_ok[first:last + 1].mean()):.0f}% of the frames "
+                           "while it is in view; improve lighting or keep the hand unoccluded.")
     sl = slice(first, last + 1)
     t = raw.t[sl] - raw.t[first]
     ok = hand_ok[sl]
