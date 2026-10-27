@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
-from robot_arm.humanoid.envs import OBS_BALL, OBS_SITE, OBS_STAGE, OBS_TARGET, G1PyramidEnv, obs_cup
-from robot_arm.humanoid.objects import DOWN, ORIENTATIONS, UP, cup_grasp_point
+from robot_arm.humanoid.envs import OBS_CAP, OBS_SITE, OBS_STAGE, OBS_TARGET, G1PyramidEnv, obs_cup
+from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_table_point
 from robot_arm.humanoid.scripted import OPEN_STEPS, PlaceExpert, TossExpert, hand_frame, to_action
 from robot_arm.synthetic import min_jerk
 from robot_arm.video.skills import GRAVITY, SkillDemo
@@ -252,7 +252,9 @@ class PlaceTracker:
                 self.phase, self.idx = "carry", plan.grasp_idx
                 self.offset0 = site - cup_pos
                 self.anchor = site - plan.waypoints[plan.grasp_idx]  # where the grasp really happened
-        cup_offset = site - cup_pos
+        final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[stage] is UP else np.array([0, 0, -1.0])
+        cup_tp, target_tp = cup_table_point(cup_pos, cup_axis, cfg), cup_table_point(target, final_axis, cfg)
+        cup_offset = site - cup_tp
         if self.phase == "carry":
             # Start from where the grasp really happened (fading towards the plan's own target) and correct slip
             # in the grasp.
@@ -263,13 +265,13 @@ class PlaceTracker:
                 self.phase = "align"
                 self.align_z = max(plan.waypoints[plan.over_idx, 2], site[2])
         if self.phase == "align":
-            goal, grip = np.array([*(target[:2] + cup_offset[:2]), self.align_z]), 1.0
-            if np.linalg.norm(cup_pos[:2] - target[:2]) < 0.006:
+            goal, grip = np.array([*(target_tp[:2] + cup_offset[:2]), self.align_z]), 1.0
+            if np.linalg.norm(cup_tp[:2] - target_tp[:2]) < 0.006:
                 self.phase = "lower"
         if self.phase == "lower":
-            goal, grip = target + cup_offset + [0, 0, 0.002], 1.0
+            goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
             goal[2] = max(goal[2], site[2] - cfg.max_step)
-            if cup_pos[2] - target[2] < 0.004:
+            if cup_tp[2] - target_tp[2] < 0.004:
                 self.phase, self.timer = "open", 0
         if self.phase == "open":
             goal = site
@@ -336,10 +338,10 @@ def _toss_episode(args):
     expert = TossExpert(**params)
     obs, _ = env.reset(seed=seed)
     mouth = obs[OBS_TARGET].copy()
-    prev, miss = obs[OBS_BALL].copy(), None
+    prev, miss = obs[OBS_CAP].copy(), None
     for _ in range(env.max_steps):
         obs, _, terminated, truncated, info = env.step(expert(obs))
-        ball = obs[OBS_BALL]
+        ball = obs[OBS_CAP]
         if miss is None and env.release_distance is not None and prev[2] >= mouth[2] > ball[2]:
             f = (prev[2] - mouth[2]) / (prev[2] - ball[2])
             miss = (prev + f * (ball - prev) - mouth)[:2]

@@ -4,9 +4,9 @@ import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.controller import rotation_error, rotvec_to_mat
-from robot_arm.humanoid.envs import (OBS_BALL, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE, OBS_STAGE,
+from robot_arm.humanoid.envs import (OBS_CAP, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE, OBS_STAGE,
                                      OBS_TARGET, obs_cup)
-from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point
+from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_table_point
 
 GRAVITY = 9.81
 OPEN_STEPS = 14
@@ -30,6 +30,13 @@ def roll_x(angle: float) -> np.ndarray:
     """Rotation about the hand's own x axis (right-multiply onto a hand frame)."""
     c, s = np.cos(angle), np.sin(angle)
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+
+def grasp_frame(yaw: float, mouth_up: bool, cfg: G1TaskConfig = G1_CFG) -> np.ndarray:
+    """Hand orientation for a side grasp. A mouth-up cup widens upwards, so the hand rolls by the wall's slope
+    to keep the flat palm parallel to the wall (a vertical palm would press the upper rim and tip the cup)."""
+    taper = np.arctan2(cfg.cup.mouth_radius - cfg.cup.bottom_radius, cfg.cup.height)
+    return hand_frame(yaw) @ roll_x(taper if mouth_up else 0.0)
 
 
 def obs_hand_mat(obs: np.ndarray) -> np.ndarray:
@@ -70,8 +77,8 @@ class PlaceExpert:
             self.stage = stage
         k = stage
         T, h = cfg.table_height, cfg.cup.height
-        R = hand_frame(self.yaw)
-        xh = R[:, 0]
+        R = grasp_frame(self.yaw, ORIENTATIONS[k] is UP, cfg)
+        xh = hand_frame(self.yaw)[:, 0]
         site = obs[OBS_SITE]
         cup_pos, cup_axis = obs_cup(obs, k)
         frac = cfg.top_grasp_height_frac if k == 2 else cfg.grasp_height_frac
@@ -79,8 +86,10 @@ class PlaceExpert:
         target = obs[OBS_TARGET]
         final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[k] is UP else np.array([0, 0, -1.0])
         place = cup_grasp_point(target, final_axis, frac, cfg) + [0, 0, 0.003]
+        target_tp = cup_table_point(target, final_axis, cfg)  # where the cup's table-side end must go
         safe_z = T + 0.30
-        carry_z = T + 1.6 * h + 0.05 + (h if k == 2 else 0.0)
+        # High enough that the held cup (hanging frac * h below the hand) clears cups standing on the table.
+        carry_z = T + h + frac * h + 0.04
         pre = grasp - self.pre_dist * xh
         self.timer += 1
         grip = -1.0
@@ -110,17 +119,18 @@ class PlaceExpert:
             goal, grip = np.array([site[0], site[1], carry_z]), 1.0
             if near(goal, 0.015):
                 self.phase = "carry"
-        # From here on, servo the held cup (not the hand) onto the target, so slip inside the grasp is corrected.
-        cup_offset = site - cup_pos
+        # From here on, servo the held cup's table-side end (not the hand) onto the target, so slip and tilt in
+        # the grasp are corrected.
+        cup_tp = cup_table_point(cup_pos, cup_axis, cfg)
+        cup_offset = site - cup_tp
         if self.phase == "carry":
-            goal, grip = np.array([target[0], target[1], site[2]]) + [*cup_offset[:2], 0], 1.0
-            goal[2] = carry_z
-            if np.linalg.norm(cup_pos[:2] - target[:2]) < 0.006:
+            goal, grip = np.array([*(target_tp[:2] + cup_offset[:2]), carry_z]), 1.0
+            if np.linalg.norm(cup_tp[:2] - target_tp[:2]) < 0.006:
                 self.phase = "lower"
         if self.phase == "lower":
-            goal, grip = target + cup_offset + [0, 0, 0.002], 1.0
+            goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
             goal[2] = max(goal[2], site[2] - cfg.max_step)  # come down gently
-            if cup_pos[2] - target[2] < 0.004:
+            if cup_tp[2] - target_tp[2] < 0.004:
                 self.phase, self.timer = "open", 0
         if self.phase == "open":
             goal = site
@@ -140,14 +150,14 @@ class TossExpert:
     def __init__(self, cfg: G1TaskConfig = G1_CFG, flight_time: float = 0.268, release_dist: float = 0.30,
                  release_height: float = 0.163, release_bearing: float = -2.377, windup: float = 0.177,
                  speed_gain: float = 0.8, aim_offset=(0.0, 0.04, 0.0), open_lead: float = 0.03,
-                 follow: float = 0.05, ball_depth: float = 0.02, palm_gap: float = 0.012,
+                 follow: float = 0.05, cap_depth: float = 0.02, palm_gap: float = 0.012,
                  open_before_swing: bool = True, palm_tilt: float = 0.099, ballistic: bool = True,
                  carry_time: float = 0.068):
         self.cfg = cfg
         self.flight_time, self.release_dist, self.release_height = flight_time, release_dist, release_height
         self.release_bearing, self.windup, self.speed_gain = release_bearing, windup, speed_gain
         self.aim_offset = np.asarray(aim_offset, float)
-        self.open_lead, self.follow, self.ball_depth, self.palm_gap = open_lead, follow, ball_depth, palm_gap
+        self.open_lead, self.follow, self.cap_depth, self.palm_gap = open_lead, follow, cap_depth, palm_gap
         self.open_before_swing, self.palm_tilt = open_before_swing, palm_tilt
         self.ballistic, self.carry_time = ballistic, carry_time
         self.reset()
@@ -177,7 +187,7 @@ class TossExpert:
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg = self.cfg
         T = cfg.table_height
-        site, ball = obs[OBS_SITE], obs[OBS_BALL]
+        site, ball = obs[OBS_SITE], obs[OBS_CAP]
         mouth = obs[OBS_TARGET]
         if self.plan is None:
             self.plan = self.release_plan(mouth)
@@ -188,7 +198,7 @@ class TossExpert:
         xh = pick_frame[:, 0]
         safe_z = T + 0.30
         # Site (4.4 cm above the palm) placed so the palm passes just under the ball, ball over the palm centre.
-        under = ball + self.ball_depth * xh - [0, 0, self.palm_gap]
+        under = ball + self.cap_depth * xh - [0, 0, self.palm_gap]
         pre = under - 0.16 * xh
         windup_pt = R_pt - vhat * self.windup
         self.timer += 1

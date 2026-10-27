@@ -5,44 +5,54 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class CupSpec:
-    """A tapered plastic cup. Measure yours and change these to match."""
+    """A tapered plastic party cup, like the red ones in your video (12 cm tall, 5 cm base, 9 cm mouth).
+    Measure yours and change these to match."""
 
-    bottom_radius: float = 0.027
-    mouth_radius: float = 0.028
-    height: float = 0.075
-    wall: float = 0.003
+    bottom_radius: float = 0.025
+    mouth_radius: float = 0.045
+    height: float = 0.12
+    wall: float = 0.002  # real cups are ~0.5 mm; much thinner walls make contacts unreliable in simulation
     mass: float = 0.012
-    segments: int = 16
+    segments: int = 24
 
 
 @dataclass(frozen=True)
 class G1TaskConfig:
     cup: CupSpec = CupSpec()
-    ball_radius: float = 0.018  # 3.6 cm ball; it sits on the tilted palm, away from the gap between the fingers
-    ball_mass: float = 0.003  # ping-pong-ball light: a heavier ball knocks the 12 g top cup off when it hits
+    # The thrown object: a plastic bottle cap (a short cylinder), 2.8 cm across.
+    cap_radius: float = 0.014
+    cap_half_height: float = 0.006
+    cap_mass: float = 0.002
 
-    table_height: float = 0.76
+    table_height: float = 0.72
     table_center: tuple[float, float] = (0.40, -0.10)
-    table_half: tuple[float, float] = (0.20, 0.34)
+    table_half: tuple[float, float] = (0.22, 0.36)
 
     # Nominal layout; reset() jitters these. Cup A goes front-left, cup B back-right of it: with the side grasp
     # used here (hand pointing forward, thumb on the cup's left, palm on its right) neither the thumb nor the
     # palm/fingers come near cup A while cup B is put down.
-    pyramid_center: tuple[float, float] = (0.40, -0.08)
+    pyramid_center: tuple[float, float] = (0.42, -0.06)
     pyramid_yaw: float = -2.356  # direction from base cup A to base cup B
-    base_gap: float = 0.035  # space between the base cups' rims: room for the fingertips; top cup still overlaps 1.4 cm
-    supply_cups: tuple[tuple[float, float], ...] = ((0.36, -0.24), (0.36, -0.36), (0.46, -0.30))  # A, B, top
-    ball_pedestal: tuple[float, float] = (0.32, 0.12)
-    pedestal_height: float = 0.07
+    base_gap: float = 0.004  # the base cups' mouths almost touch, so the top cup's base rests on both
+    # Supply spots: each cup is approached from behind (-x) and the fingertips reach ~11 cm past it, so the top
+    # cup waits further forward, clear of the corridors used for A and B.
+    supply_cups: tuple[tuple[float, float], ...] = ((0.33, -0.20), (0.31, -0.37), (0.53, -0.28))  # A, B, top
+    cap_spot: tuple[float, float] = (0.28, 0.08)  # the cap lies flat on the table here
     layout_jitter: float = 0.015
+    # How precisely the pyramid must be built (from settling tests: with the base cups up to 2 cm further apart
+    # than nominal the top cup still stands, wedged up to 2.5 cm lower between them).
+    spacing_tol: tuple[float, float] = (0.012, 0.016)  # base cups' centre distance vs nominal: below, above
+    top_tol: float = 0.02  # top cup's horizontal distance from the base cups' midpoint
+    top_sink: float = 0.03  # how far the top cup may sit below the base cups' tops
 
     # Side power grasp: the hand points along its x axis, palm facing +y, hand z up. Grasp height as a
-    # fraction of the cup's height (measured from the table side of the cup).
-    grasp_height_frac: float = 0.62  # high enough that the lower finger clears the table
-    top_grasp_height_frac: float = 0.7
+    # fraction of the cup's height (measured from the table side of the cup). The cups taper, so the base cups
+    # (mouth down) are held where they are narrower than at the table, which leaves room for the fingers.
+    grasp_height_frac: float = 0.55
+    top_grasp_height_frac: float = 0.45
 
-    # Throw: the ball must leave the hand at least this far (horizontally) from the top cup.
-    min_throw_distance: float = 0.20
+    # Throw: the cap must leave the hand at least this far (horizontally) from the top cup's centre.
+    min_throw_distance: float = 0.05
 
     sim_dt: float = 0.002
     control_dt: float = 0.05

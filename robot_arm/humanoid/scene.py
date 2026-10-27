@@ -1,4 +1,4 @@
-"""MuJoCo scene: Unitree G1 (Dex3 hands, pelvis fixed) at a table with three cups and a ball."""
+"""MuJoCo scene: Unitree G1 (Dex3 hands, pelvis fixed) at a table with three party cups and a bottle cap."""
 
 import math
 
@@ -37,16 +37,16 @@ READY = {
     "right_wrist_yaw_joint": -0.271,
 }
 
-# Where a held cup's axis sits, between the palm/fingers and the thumb, in the right_wrist_yaw_link frame
-# (found by grasp trials: the cup clears the fingers on the approach and is held upright).
-GRASP_SITE_POS = (0.11, 0.044, 0.0)
+# Where a held cup's axis sits, between the palm/fingers and the thumb, in the right_wrist_yaw_link frame.
+# The open fingers reach y = +0.009, so a cup of radius r (3.6 cm where the party cups are held) needs its
+# axis at y > 0.009 + r to slide in without being pushed; the closing fingers then wrap its far side.
+GRASP_SITE_POS = (0.11, 0.050, 0.0)
 
 CUP_NAMES = ("cup0", "cup1", "cup2")  # two base cups (given mouth-down), the top cup (given mouth-up)
 
 # Collision bits: objects and the table touch everything; the right arm/hand touches objects and the table only.
 OBJ_TYPE, OBJ_AFF = 1, 3
 HAND_TYPE, HAND_AFF = 2, 1
-PROP_TYPE, PROP_AFF = 4, 1  # touches objects (the ball) but not the hand
 
 
 def add_cup(world: mujoco.MjsBody, name: str, cup: CupSpec, rgba) -> mujoco.MjsBody:
@@ -59,7 +59,7 @@ def add_cup(world: mujoco.MjsBody, name: str, cup: CupSpec, rgba) -> mujoco.MjsB
     tilt = math.atan2(rt - rb, h)
     slant = math.hypot(h, rt - rb)
     r_mid = (rb + rt) / 2 + w / 2
-    half_len = r_mid * math.tan(math.pi / n) + 1.5e-3
+    half_len = (rt + w) * math.tan(math.pi / n) + 1e-3  # wide enough to close the ring at the mouth
     geoms = [body.add_geom(name=f"{name}_bottom", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                            size=[rb + w, w / 2, 0], pos=[0, 0, w / 2])]
     for i in range(n):
@@ -124,30 +124,14 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
                    pos=[cx, cy, cfg.table_height / 2], rgba=[0.55, 0.42, 0.3, 1],
                    contype=OBJ_TYPE, conaffinity=OBJ_AFF, friction=[0.8, 0.01, 0.001])
 
-    colors = [[0.15, 0.35, 0.85, 1], [0.15, 0.65, 0.25, 1], [0.95, 0.75, 0.1, 1]]  # as in the recording guide
-    for name, rgba in zip(CUP_NAMES, colors):
-        add_cup(world, name, cfg.cup, rgba)
+    for name in CUP_NAMES:
+        add_cup(world, name, cfg.cup, [0.8, 0.08, 0.08, 1])  # red party cups
 
-    ball = world.add_body(name="ball")
-    ball.add_freejoint(name="ball_joint")
-    ball.add_geom(name="ball_geom", type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[cfg.ball_radius, 0, 0],
-                  mass=cfg.ball_mass, rgba=[1.0, 0.5, 0.05, 1], condim=4, friction=[1.2, 0.01, 0.001],
-                  solref=[0.005, 0.6], contype=OBJ_TYPE, conaffinity=OBJ_AFF)
-
-    # Ball pedestal: a thin post with a small ring on top, so the hand can grasp the ball from the side.
-    # Simulation shortcut: the pedestal only collides with the ball (bit 4 never meets the hand's affinity),
-    # otherwise the lower finger hooks under its ring while closing around the ball.
-    px, py = cfg.ball_pedestal
-    ph = cfg.pedestal_height
-    world.add_geom(name="pedestal", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.008, ph / 2, 0],
-                   pos=[px, py, cfg.table_height + ph / 2], rgba=[0.3, 0.3, 0.3, 1],
-                   contype=PROP_TYPE, conaffinity=PROP_AFF)
-    for i in range(6):
-        a = 2 * math.pi * i / 6
-        r = cfg.ball_radius * 0.6
-        world.add_geom(name=f"pedestal_ring{i}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.002, 0.007, 0.003],
-                       pos=[px + r * math.cos(a), py + r * math.sin(a), cfg.table_height + ph + 0.003],
-                       euler=[0, 0, a], rgba=[0.3, 0.3, 0.3, 1], contype=PROP_TYPE, conaffinity=PROP_AFF)
+    cap = world.add_body(name="cap")
+    cap.add_freejoint(name="cap_joint")
+    cap.add_geom(name="cap_geom", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[cfg.cap_radius, cfg.cap_half_height, 0],
+                 mass=cfg.cap_mass, rgba=[0.1, 0.3, 0.85, 1], condim=4, friction=[1.0, 0.01, 0.001],
+                 solref=[0.005, 0.6], contype=OBJ_TYPE, conaffinity=OBJ_AFF)
 
     look = [0.34, -0.12, cfg.table_height + 0.08]
     for name, pos in (("front", [1.25, -0.35, 1.25]), ("side", [0.35, -1.05, 1.05]),
@@ -183,10 +167,10 @@ class G1Ids:
         self.cup_qpos = [jq(f"{n}_joint") for n in CUP_NAMES]
         self.cup_dofs = [jd(f"{n}_joint") for n in CUP_NAMES]
         self.cup_geoms = [{g for g in range(model.ngeom) if model.geom_bodyid[g] == b} for b in self.cup_bodies]
-        self.ball_body = model.body("ball").id
-        self.ball_qpos = jq("ball_joint")
-        self.ball_dof = jd("ball_joint")
-        self.ball_geom = model.geom("ball_geom").id
+        self.cap_body = model.body("cap").id
+        self.cap_qpos = jq("cap_joint")
+        self.cap_dof = jd("cap_joint")
+        self.cap_geom = model.geom("cap_geom").id
         self.hand_geoms = {g for g in range(model.ngeom)
                            if model.geom_contype[g] == HAND_TYPE}
         self.table_geom = model.geom("table").id

@@ -55,6 +55,12 @@ def cup_grasp_point(pos: np.ndarray, axis: np.ndarray, frac: float, cfg: G1TaskC
     return pos + axis * h * frac
 
 
+def cup_table_point(pos: np.ndarray, axis: np.ndarray, cfg: G1TaskConfig = G1_CFG) -> np.ndarray:
+    """Centre of the end of the cup that stands on the table (the mouth of a mouth-down cup, else the bottom).
+    Placing aligns this point, so a cup held slightly tilted still lands where it should."""
+    return pos + axis * cfg.cup.height if axis[2] < 0 else pos
+
+
 def cup_in_place(data, body: int, target: np.ndarray, mouth_up: bool, pos_tol: float = 0.012,
                  tilt_tol_deg: float = 12.0) -> bool:
     axis = cup_axis(data, body)
@@ -67,28 +73,38 @@ def base_spacing(cfg: G1TaskConfig = G1_CFG) -> float:
     return 2 * (cfg.cup.mouth_radius + cfg.cup.wall) + cfg.base_gap
 
 
-def pyramid_standing(data, cup_bodies, cfg: G1TaskConfig = G1_CFG, spacing_tol=(0.012, 0.008),
-                     top_tol: float = 0.012) -> bool:
-    """Judged on the cups' relative placement, since that is what holds a pyramid up: both base cups
-    mouth-down on the table at a distance the top cup can bridge, top cup mouth-up resting on both."""
-    a, b, t = cup_bodies
+def base_pair_ok(data, cup_bodies, cfg: G1TaskConfig = G1_CFG) -> bool:
+    """Both base cups mouth-down on the table, at a distance the top cup can rest across."""
+    a, b, _ = cup_bodies
     T, h = cfg.table_height, cfg.cup.height
     for body in (a, b):
         if cup_axis(data, body)[2] > -np.cos(np.radians(12)) or abs(data.xpos[body][2] - (T + h)) > 0.006:
             return False
-    dist = np.linalg.norm(data.xpos[a][:2] - data.xpos[b][:2])
     s = base_spacing(cfg)
-    if not s - spacing_tol[0] < dist < s + spacing_tol[1]:
+    return bool(s - cfg.spacing_tol[0] < np.linalg.norm(data.xpos[a][:2] - data.xpos[b][:2]) < s + cfg.spacing_tol[1])
+
+
+def top_cup_resting(data, cup_bodies, cfg: G1TaskConfig = G1_CFG) -> bool:
+    """The top cup mouth-up on the base cups: near their midpoint, and at the base cups' height or wedged up to
+    `top_sink` lower between them (it sinks in when they stand a little apart, and still stands)."""
+    a, b, t = cup_bodies
+    T, h = cfg.table_height, cfg.cup.height
+    if cup_axis(data, t)[2] < np.cos(np.radians(TOP_TILT_DEG)):
         return False
-    mid = np.array([*(data.xpos[a][:2] + data.xpos[b][:2]) / 2, T + h])
-    # The top cup bridges a gap, so it may lean a little into it and still stand.
-    return cup_in_place(data, t, mid, True, top_tol, tilt_tol_deg=TOP_TILT_DEG)
+    mid = (data.xpos[a][:2] + data.xpos[b][:2]) / 2
+    z = data.xpos[t][2] - (T + h)
+    return bool(np.linalg.norm(data.xpos[t][:2] - mid) < cfg.top_tol and -cfg.top_sink < z < 0.01)
 
 
-def ball_in_cup(data, ball_body: int, cup_body: int, ball_radius: float, cfg: G1TaskConfig = G1_CFG) -> bool:
+def pyramid_standing(data, cup_bodies, cfg: G1TaskConfig = G1_CFG) -> bool:
+    """Judged on the cups' relative placement, since that is what holds a pyramid up."""
+    return base_pair_ok(data, cup_bodies, cfg) and top_cup_resting(data, cup_bodies, cfg)
+
+
+def cap_in_cup(data, cap_body: int, cup_body: int, cap_radius: float, cfg: G1TaskConfig = G1_CFG) -> bool:
     """Ball centre inside the (mouth-up) cup, below the rim."""
     R = data.xmat[cup_body].reshape(3, 3)
-    local = R.T @ (data.xpos[ball_body] - data.xpos[cup_body])
+    local = R.T @ (data.xpos[cap_body] - data.xpos[cup_body])
     cup = cfg.cup
     if not (0.0 < local[2] < cup.height):
         return False
