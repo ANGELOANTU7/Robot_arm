@@ -3,6 +3,9 @@
     python scripts/train_rl.py --init runs/bc/policy.pt --demos data/processed/robot_demos.npz --out runs/ppo
     python scripts/evaluate.py --policy runs/ppo/policy.pt --videos runs/ppo/videos
 
+    # G1 cup pyramid (the task comes from the checkpoint)
+    python scripts/train_rl.py --init runs/g1_toss_bc/policy.pt --demos data/processed/g1_toss.npz --out runs/g1_toss_ppo
+
 Simulation runs on CPU worker processes (--num-envs, roughly one per core); the networks train on the GPU.
 """
 

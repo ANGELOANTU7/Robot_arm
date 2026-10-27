@@ -152,6 +152,43 @@ def toss_demo(rng: np.random.Generator, fps: float = 60.0) -> SkillDemo:
                      ball_release, {"synthetic": 1.0})
 
 
+def look_at_camera(pos=(-0.05, -0.85, 0.55), look=(-0.06, 0.18, 0.12), width: int = 1280, height: int = 720,
+                   focal: float = 1000.0) -> Camera:
+    """A pinhole camera at `pos` looking at `look` (table frame). The default frames the whole skill workspace:
+    the sheet, the cups, the reach above them, the wind-up and the ball's flight."""
+    pos, look = np.array(pos, float), np.array(look, float)
+    fwd = (look - pos) / np.linalg.norm(look - pos)
+    right = np.cross(fwd, [0, 0, 1.0])
+    right /= np.linalg.norm(right)
+    down = np.cross(fwd, right)
+    R = np.stack([right, down, fwd])
+    K = np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]])
+    return Camera(K, R, -R @ pos, width, height)
+
+
+def synthetic_skill_demos(rng: np.random.Generator, n_per_skill: int = 10, camera: Camera | None = None
+                          ) -> list[tuple[str, SkillDemo]]:
+    """Synthetic human skill demos passed through the video reconstruction (so they carry its errors).
+
+    place_base clips alternate between cup A and cup B. Returns (name, demo) pairs."""
+    from robot_arm.video.skills import reconstruct_skill
+
+    camera = camera or look_at_camera()
+    out = []
+    for i in range(n_per_skill):
+        for kind, name in ((["A", "B"][i % 2], "place_base"), ("top", "place_top"), (None, "toss")):
+            if kind is None:
+                truth, static = toss_demo(rng), []
+            else:
+                truth, static = place_demo(rng, kind)
+            track = render_track(truth, camera, rng, static, size_error=rng.uniform(0.85, 1.2))
+            demo = reconstruct_skill(track, camera, truth.skill, cup_height=CUP_H, cup_radius=CUP_R,
+                                     ball_radius=BALL_R)
+            demo.info["synthetic"] = 1.0
+            out.append((f"{name}_{i:02d}", demo))
+    return out
+
+
 def cup_front_px(camera: Camera, base: np.ndarray, radius: float = CUP_R) -> np.ndarray:
     """Pixel of a cup's table-side rim point nearest the camera (the lowest pixel of its blob)."""
     view = base - camera.center_table

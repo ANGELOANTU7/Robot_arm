@@ -28,9 +28,11 @@ class ActorCritic(nn.Module):
     Observations are normalised with fixed statistics taken from the demonstrations.
     """
 
-    def __init__(self, hidden: int = 256, layers: int = 3, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM):
+    def __init__(self, hidden: int = 256, layers: int = 3, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM,
+                 grip_obs: int = OBS_GRIP, task: str = "panda"):
         super().__init__()
         self.hidden, self.layers = hidden, layers
+        self.obs_dim, self.act_dim, self.grip_obs, self.task = obs_dim, act_dim, grip_obs, task
         self.actor = mlp([obs_dim] + [hidden] * layers + [act_dim], out_gain=0.01)
         self.critic = mlp([obs_dim] + [hidden] * layers + [1], out_gain=1.0)
         self.log_std = nn.Parameter(torch.full((act_dim,), -1.0))
@@ -55,12 +57,22 @@ class ActorCritic(nn.Module):
         return self.actor(self.normalize(obs))
 
     def save(self, path: str | Path, **extra) -> None:
-        torch.save({"state_dict": self.state_dict(), "hidden": self.hidden, "layers": self.layers, **extra}, path)
+        torch.save({"state_dict": self.state_dict(), "hidden": self.hidden, "layers": self.layers,
+                    "obs_dim": self.obs_dim, "act_dim": self.act_dim, "grip_obs": self.grip_obs, "task": self.task,
+                    **extra}, path)
+
+    @classmethod
+    def for_task(cls, task: str, hidden: int = 256, layers: int = 3) -> "ActorCritic":
+        from robot_arm.tasks import get_task
+
+        spec = get_task(task)
+        return cls(hidden, layers, spec.obs_dim, spec.act_dim, spec.grip_obs, task)
 
     @classmethod
     def load(cls, path: str | Path, device: str = "cpu") -> "ActorCritic":
         ckpt = torch.load(path, map_location=device, weights_only=False)
-        model = cls(ckpt["hidden"], ckpt["layers"])
+        model = cls(ckpt["hidden"], ckpt["layers"], ckpt.get("obs_dim", OBS_DIM), ckpt.get("act_dim", ACT_DIM),
+                    ckpt.get("grip_obs", OBS_GRIP), ckpt.get("task", "panda"))
         model.load_state_dict(ckpt["state_dict"])
         return model.to(device)
 
@@ -68,11 +80,11 @@ class ActorCritic(nn.Module):
 def bc_loss(model: "ActorCritic", obs: torch.Tensor, act: torch.Tensor, switch_weight: float = 20.0) -> torch.Tensor:
     """MSE to the demo actions, with the rare gripper open/close switches upweighted.
 
-    Each demo has only two switches (close on the ball, open over the cup) among ~150 steps; without the extra
+    Each demo has only two switches (close on the object, open at the target) among ~150 steps; without the extra
     weight the regressed gripper output drifts towards "keep doing what you did" right where it must switch.
     """
     err = (model.mean_action(obs) - act) ** 2
-    switch = (obs[:, OBS_GRIP] > 0) != (act[:, -1] > 0)
+    switch = (obs[:, model.grip_obs] > 0) != (act[:, -1] > 0)
     w = torch.ones_like(err)
     w[:, -1] = 1.0 + (switch_weight - 1.0) * switch.float()
     return (err * w).sum() / w.sum()

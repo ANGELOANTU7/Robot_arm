@@ -49,7 +49,8 @@ class G1TaskConfig:
     max_step: float = 0.015  # palm translation per control step (m)
     toss_max_step: float = 0.08  # the toss needs fast swings (up to 1.6 m/s)
     max_rot_step: float = 0.12  # palm rotation per control step (rad)
-    grip_rate: float = 0.25  # synergy change per control step (closed -> open in 0.4 s)
+    grip_rate: float = 0.25  # synergy change per control step when closing (open -> closed in 0.4 s)
+    release_rate: float = 0.15  # when opening around a cup: slower, so the fingers don't push the light cup away
     toss_grip_rate: float = 1.0  # releasing a throw: open in 0.1 s
     leash: float = 0.015  # max distance of the commanded grasp-site position from the actual one (m)
     rot_leash: float = 0.3  # same for the hand orientation (rad)

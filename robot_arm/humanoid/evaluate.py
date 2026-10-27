@@ -26,9 +26,13 @@ class StagePolicy:
 
 
 def make_policy(spec: str, device: str = "cpu"):
-    """'scripted', or 'place=<ckpt>,toss=<ckpt>' (either may be 'scripted')."""
+    """'scripted', 'replay:<folder of human skill demos>', or 'place=<ckpt>,toss=<ckpt>' (either may be
+    'scripted')."""
     from robot_arm.humanoid.scripted import PlaceExpert, TossExpert
 
+    if spec.startswith("replay:"):
+        from robot_arm.humanoid.dataset import load_replay_policy
+        return load_replay_policy(spec.split(":", 1)[1])
     parts = {"place": "scripted", "toss": "scripted"}
     if spec != "scripted":
         for item in spec.split(","):
@@ -48,6 +52,8 @@ def _episode(args):
     task, stage, spec, seed, video, camera = args
     env = G1PyramidEnv(task=task, stage=stage, render_mode="rgb_array" if video else None, camera=camera)
     policy = make_policy(spec)
+    if hasattr(policy, "start_at"):  # replay: cycle through the human demos across episodes
+        policy.start_at(seed)
     obs, _ = env.reset(seed=seed)
     policy.reset()
     frames = [env.render()] if video else []

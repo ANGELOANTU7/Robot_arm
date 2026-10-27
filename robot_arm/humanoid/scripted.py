@@ -9,6 +9,7 @@ from robot_arm.humanoid.envs import (OBS_BALL, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAN
 from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point
 
 GRAVITY = 9.81
+OPEN_STEPS = 14
 
 
 def hand_frame(yaw: float, palm_dir: np.ndarray | None = None) -> np.ndarray:
@@ -123,7 +124,7 @@ class PlaceExpert:
                 self.phase, self.timer = "open", 0
         if self.phase == "open":
             goal = site
-            if self.timer > 12:
+            if self.timer > OPEN_STEPS:  # fully open (see release_rate)
                 self.phase = "up"
         if self.phase == "up":  # straight up: the open hand slides off the cup without dragging it
             goal = np.array([site[0], site[1], safe_z])

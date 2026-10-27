@@ -193,9 +193,9 @@ class G1PyramidEnv(gym.Env):
             err = rotation_error(self.hand_mat, self.cmd_mat)
             self.cmd_mat = rotvec_to_mat(err * cfg.rot_leash / np.linalg.norm(err)) @ self.hand_mat
         self.grip = float(a[6])
-        # Fingers move at a finite speed (a snap-open flings a light cup away).
-        rate = cfg.toss_grip_rate if self.stage == 3 else cfg.grip_rate  # a throw needs a quick release
-        self.hand_state += np.clip(self.grip - self.hand_state, -rate, rate)
+        # Fingers move at a finite speed (a snap-open flings a light cup away); a throw needs a quick release.
+        close, open_ = (cfg.toss_grip_rate,) * 2 if self.stage == 3 else (cfg.grip_rate, cfg.release_rate)
+        self.hand_state += np.clip(self.grip - self.hand_state, -open_, close)
         # Interpolate the command over the control period so fast motions are tracked smoothly.
         n = cfg.ik_substeps
         rot = rotation_error(prev_mat, self.cmd_mat)

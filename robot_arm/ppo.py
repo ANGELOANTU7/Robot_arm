@@ -7,6 +7,7 @@ not wreck the BC policy.
 """
 
 import json
+import shutil
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,9 +17,8 @@ import numpy as np
 import torch
 
 from robot_arm.dataset import DemoDataset
-from robot_arm.env import PandaBallCupEnv
-from robot_arm.evaluate import evaluate
-from robot_arm.policy import ActorCritic, TorchPolicy, bc_loss
+from robot_arm.policy import ActorCritic, bc_loss
+from robot_arm.tasks import get_task
 
 
 @dataclass
@@ -45,11 +45,12 @@ class PPOConfig:
     min_log_std: float = -3.0
     eval_every: int = 20
     eval_episodes: int = 50
+    eval_workers: int = 4  # processes for the G1 evaluations
     seed: int = 0
 
 
-def make_envs(n: int, seed: int) -> gym.vector.VectorEnv:
-    fns = [lambda: PandaBallCupEnv() for _ in range(n)]
+def make_envs(n: int, seed: int, task: str = "panda") -> gym.vector.VectorEnv:
+    fns = [get_task(task).make_env for _ in range(n)]
     envs = gym.vector.AsyncVectorEnv(fns, autoreset_mode=gym.vector.AutoresetMode.SAME_STEP, context="spawn")
     envs.reset(seed=seed)
     return envs
@@ -64,6 +65,12 @@ def train_ppo(init_checkpoint: str | Path, demos_path: str | Path | None, out_di
     (out_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=1))
 
     model = ActorCritic.load(init_checkpoint, device)
+    spec = get_task(model.task)
+
+    def evaluate_model(name: str) -> dict:
+        model.save(out_dir / name, source="ppo")
+        return spec.evaluate(out_dir / name, episodes=cfg.eval_episodes, seed=60_000, workers=cfg.eval_workers)
+
     actor_params = list(model.actor.parameters()) + [model.log_std]
     actor_opt = torch.optim.Adam(actor_params, lr=cfg.actor_lr, eps=1e-5)
     critic_opt = torch.optim.Adam(model.critic.parameters(), lr=cfg.critic_lr, eps=1e-5)
@@ -73,7 +80,7 @@ def train_ppo(init_checkpoint: str | Path, demos_path: str | Path | None, out_di
         demo_obs = torch.as_tensor(demos.obs, dtype=torch.float32, device=device)
         demo_act = torch.as_tensor(demos.actions, dtype=torch.float32, device=device)
 
-    envs = make_envs(cfg.num_envs, cfg.seed)
+    envs = make_envs(cfg.num_envs, cfg.seed, model.task)
     N, T = cfg.num_envs, cfg.rollout_steps
     obs_buf = torch.zeros((T, N, model.obs_mean.shape[0]), device=device)
     act_buf = torch.zeros((T, N, model.log_std.shape[0]), device=device)
@@ -86,7 +93,7 @@ def train_ppo(init_checkpoint: str | Path, demos_path: str | Path | None, out_di
     history, best_eval = [], -1.0
     start = time.time()
 
-    init_eval = evaluate(TorchPolicy(model, device), episodes=cfg.eval_episodes, seed=60_000)
+    init_eval = evaluate_model("candidate.pt")
     print(f"initial (BC) deterministic success: {init_eval['success_rate']:.2f}")
     best_eval = init_eval["success_rate"]
     model.save(out_dir / "policy.pt", source="bc-init")
@@ -192,12 +199,11 @@ def train_ppo(init_checkpoint: str | Path, demos_path: str | Path | None, out_di
                "std": model.log_std.exp().mean().item(), "bc_coef": bc_coef,
                **{k: v / n_updates for k, v in stats.items()}}
         if it % cfg.eval_every == 0 or it == cfg.iterations:
-            ev = evaluate(TorchPolicy(model, device), episodes=cfg.eval_episodes, seed=60_000)
+            ev = evaluate_model("last.pt")
             row["eval_success"] = ev["success_rate"]
             if ev["success_rate"] >= best_eval:
                 best_eval = ev["success_rate"]
-                model.save(out_dir / "policy.pt", source="ppo", iteration=it)
-            model.save(out_dir / "last.pt", source="ppo", iteration=it)
+                shutil.copy(out_dir / "last.pt", out_dir / "policy.pt")
         history.append(row)
         print(json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in row.items()}), flush=True)
         (out_dir / "history.json").write_text(json.dumps(history, indent=1))

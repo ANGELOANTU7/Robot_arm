@@ -6,18 +6,18 @@ import numpy as np
 import pytest
 
 import robot_arm.video.skill_process as skill_process
-from robot_arm.humanoid.synthetic import (BALL_R, CUP_H, CUP_R, object_paths, place_demo, render_track,
-                                          side_grasp_rot, toss_demo)
+from robot_arm.humanoid.synthetic import (BALL_R, CUP_H, CUP_R, look_at_camera, object_paths, place_demo,
+                                          render_track, side_grasp_rot, toss_demo)
 from robot_arm.video.hand_pose import closure, palm_frame
 from robot_arm.video.skills import GRAVITY, SkillDemo, reconstruct_skill
 from robot_arm.video.synthetic_hand import hand_landmarks
 from robot_arm.video.tracking import HandDetection
-from test_video import make_camera, render_sheet
+from test_video import render_sheet
 
 
 def skill_camera():
     """Further back than the pinch clips' camera: the whole reach, the wind-up and the ball's flight are in view."""
-    return make_camera(pos=(-0.05, -0.85, 0.55), look=(-0.06, 0.18, 0.12))
+    return look_at_camera()
 
 
 def angle_deg(A, B):

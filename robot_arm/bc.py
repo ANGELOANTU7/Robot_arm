@@ -1,26 +1,29 @@
 """Behavior cloning: fit the actor's mean to the retargeted demonstration actions."""
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from robot_arm.dataset import DemoDataset
-from robot_arm.evaluate import evaluate
-from robot_arm.policy import ActorCritic, TorchPolicy, bc_loss
+from robot_arm.policy import ActorCritic, bc_loss
+from robot_arm.tasks import get_task
 
 
 def train_bc(data_path: str | Path, out_dir: str | Path, epochs: int = 60, batch_size: int = 1024,
              lr: float = 1e-3, hidden: int = 256, layers: int = 3, eval_every: int = 10, eval_episodes: int = 30,
-             device: str | None = None, seed: int = 0) -> dict:
+             device: str | None = None, seed: int = 0, task: str = "panda", eval_workers: int = 4) -> dict:
+    """Train on a demo dataset of `task` (see robot_arm.tasks); keep the checkpoint that succeeds most often."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     train, val = DemoDataset.load(data_path).split(0.1, seed)
-    model = ActorCritic(hidden, layers).to(device)
+    spec = get_task(task)
+    model = ActorCritic.for_task(task, hidden, layers).to(device)
     model.set_obs_stats(train.obs.mean(0), train.obs.std(0))
     to = lambda x: torch.as_tensor(x, dtype=torch.float32, device=device)  # noqa: E731
     obs_t, act_t = to(train.obs), to(train.actions)
@@ -47,13 +50,14 @@ def train_bc(data_path: str | Path, out_dir: str | Path, epochs: int = 60, batch
             val_loss = bc_loss(model, obs_v, act_v).item()
         row = {"epoch": epoch, "train_loss": total / steps_per_epoch, "val_loss": val_loss}
         if epoch % eval_every == 0 or epoch == epochs:
-            stats = evaluate(TorchPolicy(model.cpu()), episodes=eval_episodes, seed=50_000)
-            model.to(device)
+            _set_std_from_residuals(model, obs_t, act_t)
+            model.save(out_dir / "candidate.pt", source="bc", epoch=epoch)
+            stats = spec.evaluate(out_dir / "candidate.pt", episodes=eval_episodes, seed=50_000,
+                                  workers=eval_workers)
             row["success_rate"] = stats["success_rate"]
             if stats["success_rate"] >= best["success_rate"]:
                 best = {**row}
-                _set_std_from_residuals(model, obs_t, act_t)
-                model.save(out_dir / "policy.pt", source="bc", epoch=epoch)
+                shutil.copy(out_dir / "candidate.pt", out_dir / "policy.pt")
         history.append(row)
         print(json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in row.items()}))
 
