@@ -257,8 +257,8 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
         # (MediaPipe's world landmarks are camera-aligned), so it shares the palm's smoothing and depth scale.
         tips = hand_world[:, list(PINCH_TIPS)].mean(axis=1) - hand_world[:, PALM_POINTS].mean(axis=1)
         pinch_cam = palm_cam + _smooth(tips, fps, 0.05)
-        point_cam, anchor, offset, weight = pinch_cam[hold].mean(axis=0), obj_start, 0.0, np.ones(3)
-        normal = np.zeros(3)
+        point_cam, anchor, offset, normal = pinch_cam[hold].mean(axis=0), obj_start, 0.0, np.zeros(3)
+        weight = np.ones(3)
     else:
         mouth_up = skill == "place_top"
         if "start" not in track.marks:
@@ -270,9 +270,8 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
             obj_end = cup_on_table(track.marks["end"], camera, props, mouth_up)
         else:
             raise RuntimeError("Could not tell where the moved cup ended; pull your hand out of view at the end.")
-        point_cam, anchor, offset = palm_cam[hold].mean(axis=0), obj_start + [0, 0, grasp_frac * props.cup_height], \
-            palm_offset
-        normal = rot_table[hold, :, 2].mean(axis=0)
+        point_cam, anchor = palm_cam[hold].mean(axis=0), obj_start + [0, 0, grasp_frac * props.cup_height]
+        offset, normal = palm_offset, rot_table[hold, :, 2].mean(axis=0)
         weight = np.array([1.0, 1.0, 0.1])  # a cup can be held at any height
 
     # Depth scale: the hand's grasp point lands on the anchor during the grasp.
