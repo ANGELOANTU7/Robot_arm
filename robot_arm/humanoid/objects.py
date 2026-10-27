@@ -39,7 +39,7 @@ class PyramidLayout:
 
 
 ORIENTATIONS = [DOWN, DOWN, UP]
-TOP_TILT_DEG = 20.0  # how far the top cup may lean and still count as standing  # final orientation of cup0, cup1, cup2 (also how they are given)
+TOP_TILT_DEG = 20.0  # how far the top cup may lean and still count as standing
 
 
 def cup_axis(data: mujoco.MjData, body: int) -> np.ndarray:
@@ -59,6 +59,12 @@ def cup_table_point(pos: np.ndarray, axis: np.ndarray, cfg: G1TaskConfig = G1_CF
     """Centre of the end of the cup that stands on the table (the mouth of a mouth-down cup, else the bottom).
     Placing aligns this point, so a cup held slightly tilted still lands where it should."""
     return pos + axis * cfg.cup.height if axis[2] < 0 else pos
+
+
+def cup_lowest_z(pos: np.ndarray, axis: np.ndarray, cfg: G1TaskConfig = G1_CFG) -> float:
+    """Height of the lowest point of the cup's table-side rim (a tilted cup touches down there first)."""
+    r = (cfg.cup.mouth_radius if axis[2] < 0 else cfg.cup.bottom_radius) + cfg.cup.wall
+    return float(cup_table_point(pos, axis, cfg)[2] - r * np.sqrt(max(0.0, 1 - axis[2] ** 2)))
 
 
 def cup_in_place(data, body: int, target: np.ndarray, mouth_up: bool, pos_tol: float = 0.012,

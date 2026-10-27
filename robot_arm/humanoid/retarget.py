@@ -30,8 +30,8 @@ import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.envs import OBS_CAP, OBS_SITE, OBS_STAGE, OBS_TARGET, G1PyramidEnv, obs_cup
-from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_table_point
-from robot_arm.humanoid.scripted import OPEN_STEPS, PlaceExpert, TossExpert, hand_frame, to_action
+from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point
+from robot_arm.humanoid.scripted import BACK_OFF, OPEN_STEPS, PlaceExpert, TossExpert, grasp_frame, hand_frame, to_action
 from robot_arm.synthetic import min_jerk
 from robot_arm.video.skills import GRAVITY, SkillDemo
 
@@ -197,14 +197,14 @@ class PlaceTracker:
     - the final approach and the grasp servo onto the cup's actual grasp point;
     - during the carry the held cup (not the hand) is servoed along the plan, so slip in the grasp is corrected;
     - once the cup is about over its target, it is aligned and lowered straight down;
-    - the hand opens when the cup stands on the target, then follows the plan's retreat.
+    - the hand opens when the cup stands on the target, then follows the plan's retreat (out of the mouth-up top
+      cup it first slides back along the fingers, as rising would drag the cup by its widening walls).
     """
 
     FINE_PHASES = ("approach", "close", "lower", "open")
 
     def __init__(self, plan: PlacePlan, cfg: G1TaskConfig = G1_CFG, lag_tol: float = 0.025):
         self.plan, self.cfg, self.lag_tol = plan, cfg, lag_tol
-        self.R = hand_frame(plan.yaw)
         self.reset()
 
     def reset(self):
@@ -232,6 +232,8 @@ class PlaceTracker:
         frac = cfg.top_grasp_height_frac if stage == 2 else cfg.grasp_height_frac
         grasp = cup_grasp_point(cup_pos, cup_axis, frac, cfg)
         target = obs[OBS_TARGET]
+        R = grasp_frame(plan.yaw, ORIENTATIONS[stage] is UP, cfg)
+        xh = hand_frame(plan.yaw)[:, 0]
         self.timer += 1
         grip = -1.0
         near = lambda p, tol: np.linalg.norm(p - site) < tol  # noqa: E731
@@ -271,16 +273,21 @@ class PlaceTracker:
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
             goal[2] = max(goal[2], site[2] - cfg.max_step)
-            if cup_tp[2] - target_tp[2] < 0.004:
+            if cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2] < 0.003:  # touched down
                 self.phase, self.timer = "open", 0
         if self.phase == "open":
             goal = site
             if self.timer > OPEN_STEPS:  # fully open (see release_rate)
-                self.phase, self.idx, self.release_site = "retreat", plan.release_idx, site.copy()
+                self.phase, self.release_site = ("back" if stage == 2 else "retreat"), site.copy()
+                self.idx = plan.release_idx
+        if self.phase == "back":
+            goal = self.release_site - BACK_OFF * xh
+            if near(goal, 0.01):
+                self.phase, self.release_site = "retreat", site.copy()
         if self.phase == "retreat":
             goal = self.release_site + plan.waypoints[self.idx] - plan.waypoints[plan.release_idx]
             self._advance(site, goal, len(plan.waypoints) - 1)
-        return to_action(obs, goal, self.R, grip, cfg.max_step, cfg)
+        return to_action(obs, goal, R, grip, cfg.max_step, cfg)
 
 
 # ---------------------------------------------------------------------------------------------- tossing

@@ -3,13 +3,14 @@
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
-from robot_arm.humanoid.controller import rotation_error, rotvec_to_mat
+from robot_arm.humanoid.controller import pinch_frame, rotation_error, rotvec_to_mat, site_for_pinch
 from robot_arm.humanoid.envs import (OBS_CAP, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE, OBS_STAGE,
                                      OBS_TARGET, obs_cup)
-from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_table_point
+from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point
 
 GRAVITY = 9.81
 OPEN_STEPS = 14
+BACK_OFF = 0.16  # how far the open hand slides back out of a released top cup (the fingertips reach ~11 cm past it)
 
 
 def hand_frame(yaw: float, palm_dir: np.ndarray | None = None) -> np.ndarray:
@@ -60,7 +61,10 @@ def to_action(obs, goal_pos, goal_mat, grip, max_step, cfg: G1TaskConfig = G1_CF
 
 
 class PlaceExpert:
-    """rise -> over the pre-grasp point -> down -> slide in -> close -> lift -> carry -> lower -> open -> back off."""
+    """rise -> over the pre-grasp point -> down -> slide in -> close -> lift -> carry -> lower -> open -> leave.
+
+    The top cup (mouth up, resting across two cups) is left by sliding the open hand back out along the fingers
+    before rising: rising straight up would drag it by its widening walls."""
 
     def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float = 0.0, pre_dist: float = 0.16):
         self.cfg, self.yaw, self.pre_dist = cfg, yaw, pre_dist
@@ -85,7 +89,6 @@ class PlaceExpert:
         grasp = cup_grasp_point(cup_pos, cup_axis, frac, cfg)
         target = obs[OBS_TARGET]
         final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[k] is UP else np.array([0, 0, -1.0])
-        place = cup_grasp_point(target, final_axis, frac, cfg) + [0, 0, 0.003]
         target_tp = cup_table_point(target, final_axis, cfg)  # where the cup's table-side end must go
         safe_z = T + 0.30
         # High enough that the held cup (hanging frac * h below the hand) clears cups standing on the table.
@@ -130,136 +133,164 @@ class PlaceExpert:
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
             goal[2] = max(goal[2], site[2] - cfg.max_step)  # come down gently
-            if cup_tp[2] - target_tp[2] < 0.004:
+            if cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2] < 0.003:  # touched down
                 self.phase, self.timer = "open", 0
         if self.phase == "open":
             goal = site
             if self.timer > OPEN_STEPS:  # fully open (see release_rate)
+                self.phase, self.back_from = ("back" if k == 2 else "up"), site.copy()
+        if self.phase == "back":
+            goal = self.back_from - BACK_OFF * xh
+            if near(goal, 0.01):
                 self.phase = "up"
-        if self.phase == "up":  # straight up: the open hand slides off the cup without dragging it
+        if self.phase == "up":
             goal = np.array([site[0], site[1], safe_z])
         return to_action(obs, goal, R, grip, cfg.max_step, cfg)
 
 
 class TossExpert:
-    """Underhand scoop toss: slide the palm (facing up) under the ball, lift it off the stand and close the hand
-    over it, turn towards the cup while winding up, swing along the ballistic release velocity, open just before
-    the release point and stop, so the ball flies off the palm."""
+    """Pinch the cap off the table and throw it sideways into the top cup.
 
-    # Defaults found by a parameter search plus aim calibration over random layouts (scripts in the README).
-    def __init__(self, cfg: G1TaskConfig = G1_CFG, flight_time: float = 0.268, release_dist: float = 0.30,
-                 release_height: float = 0.163, release_bearing: float = -2.377, windup: float = 0.177,
-                 speed_gain: float = 0.8, aim_offset=(0.0, 0.04, 0.0), open_lead: float = 0.03,
-                 follow: float = 0.05, cap_depth: float = 0.02, palm_gap: float = 0.012,
-                 open_before_swing: bool = True, palm_tilt: float = 0.099, ballistic: bool = True,
-                 carry_time: float = 0.068):
+    - Pick: hand pointing down over the cap; lower until the pinch point is level with the cap; pinch.
+    - Throw: lift, then wind up on cup B's side of the pyramid. Swing along the line of the two base cups, so
+      the cap's push on landing goes the way the top cup is held by both base cups (thrown front-to-back it
+      would tip the top cup). Release at a ballistic velocity that drops the cap into the mouth: the hand
+      follows the cap's own flight path while the fingers open, then stops and pulls up.
+
+    `release_bearing` turns the release point away from the base cups' axis (0: straight along it, from B's
+    side); `release_dist` and `release_height` place the cap at release relative to the mouth.
+    """
+
+    # Defaults from a parameter sweep with the aim calibrated over random layouts (see the README).
+    def __init__(self, cfg: G1TaskConfig = G1_CFG, flight_time: float = 0.30, release_dist: float = 0.12,
+                 release_height: float = 0.08, release_bearing: float = 0.0, windup: float = 0.15,
+                 speed_gain: float = 1.0, aim_offset=(0.0, 0.0, 0.0), carry_time: float = 0.05,
+                 close_steps: int = 6, pinch_depth: float = 0.008):
         self.cfg = cfg
         self.flight_time, self.release_dist, self.release_height = flight_time, release_dist, release_height
         self.release_bearing, self.windup, self.speed_gain = release_bearing, windup, speed_gain
         self.aim_offset = np.asarray(aim_offset, float)
-        self.open_lead, self.follow, self.cap_depth, self.palm_gap = open_lead, follow, cap_depth, palm_gap
-        self.open_before_swing, self.palm_tilt = open_before_swing, palm_tilt
-        self.ballistic, self.carry_time = ballistic, carry_time
+        self.carry_time, self.close_steps, self.pinch_depth = carry_time, close_steps, pinch_depth
         self.reset()
 
     def reset(self):
         self.phase, self.timer = "rise", 0
-        self.plan = None
+        self.plan, self.aimed = None, False
 
-    def release_plan(self, mouth: np.ndarray):
-        """Release point and velocity so a free ball passes through the mouth centre after flight_time."""
-        b = self.release_bearing
-        R = mouth + np.array([self.release_dist * np.cos(b), self.release_dist * np.sin(b), self.release_height])
+    @staticmethod
+    def base_axis(obs: np.ndarray) -> np.ndarray:
+        """Horizontal unit vector from base cup A to base cup B."""
+        a, b = obs_cup(obs, 0)[0], obs_cup(obs, 1)[0]
+        u = np.array([b[0] - a[0], b[1] - a[1], 0.0])
+        return u / max(np.linalg.norm(u), 1e-6)
+
+    def release_plan(self, mouth: np.ndarray, axis: np.ndarray):
+        """Release point (of the cap) and velocity so a free cap passes through the mouth after flight_time."""
+        c, s = np.cos(self.release_bearing), np.sin(self.release_bearing)
+        side = np.array([c * axis[0] - s * axis[1], s * axis[0] + c * axis[1], 0.0])
+        R = mouth + self.release_dist * side + [0, 0, self.release_height]
         t = self.flight_time
         v = (mouth + self.aim_offset - R + np.array([0, 0, 0.5 * GRAVITY * t * t])) / t
         return R, v
 
-    @staticmethod
-    def palm_up(direction: np.ndarray, tilt: float = 0.0) -> np.ndarray:
-        """Palm facing up, fingers along `direction`; `tilt` raises the fingers so the ball settles at the
-        base of the palm (the same spot every throw)."""
-        x = np.array([direction[0], direction[1], 0.0])
-        x /= np.linalg.norm(x)
-        y = np.array([0.0, 0.0, 1.0])
-        x, y = np.cos(tilt) * x + np.sin(tilt) * y, -np.sin(tilt) * x + np.cos(tilt) * y
-        return np.column_stack([x, y, np.cross(x, y)])
+    pinch_frame = staticmethod(pinch_frame)
+    site_for = staticmethod(site_for_pinch)
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg = self.cfg
         T = cfg.table_height
-        site, ball = obs[OBS_SITE], obs[OBS_CAP]
+        site, cap = obs[OBS_SITE], obs[OBS_CAP]
         mouth = obs[OBS_TARGET]
         if self.plan is None:
-            self.plan = self.release_plan(mouth)
+            self.plan = self.release_plan(mouth, self.base_axis(obs))
         R_pt, v = self.plan
+        throw_dir = np.array([v[0], v[1], 0.0]) / np.linalg.norm(v[:2])
+        frame = self.pinch_frame(throw_dir)
+        hand = obs_hand_mat(obs)
+        safe_z = T + 2 * cfg.cup.height + 0.12  # the hand stays well above the pyramid while it turns
+        # The fingertips skim the table as they close, so they meet the cap low on its sides (from pick trials).
+        pinch_at_cap = cap - [0, 0, self.pinch_depth]
         vhat = v / np.linalg.norm(v)
-        pick_frame = self.palm_up(np.array([1.0, 0.0]))
-        throw_frame = self.palm_up(v, self.palm_tilt)
-        xh = pick_frame[:, 0]
-        safe_z = T + 0.30
-        # Site (4.4 cm above the palm) placed so the palm passes just under the ball, ball over the palm centre.
-        under = ball + self.cap_depth * xh - [0, 0, self.palm_gap]
-        pre = under - 0.16 * xh
         windup_pt = R_pt - vhat * self.windup
         self.timer += 1
-        grip, frame, speed = -1.0, pick_frame, cfg.max_step
+        grip, speed = -1.0, cfg.max_step
         near = lambda p, tol: np.linalg.norm(p - site) < tol  # noqa: E731
+        aligned = np.linalg.norm(rotation_error(hand, frame)) < 0.07
 
+        # Straight up, across to above the cap, and only then turn the fingers down: turning over the pyramid
+        # would sweep the fingers into the top cup.
+        above_cap = self.site_for(pinch_at_cap, frame)
+        above_cap[2] = max(safe_z, site[2]) if self.phase in ("rise", "traverse", "turn") else safe_z
+        if self.phase == "rise" and self.timer == 1 and site[2] < safe_z - 0.05:
+            # Right after letting go of the top cup the hand is still around it: slide out along the fingers first.
+            self.phase, self.back_from = "back", site.copy()
+        if self.phase == "back":
+            goal, frame_cmd = self.back_from - BACK_OFF * hand[:, 0], hand
+            if near(goal, 0.01) or self.timer > 15:
+                self.phase = "rise"
         if self.phase == "rise":
-            goal = np.array([site[0], site[1], safe_z])
-            if near(goal, 0.03):
-                self.phase = "over_pre"
-        if self.phase == "over_pre":
-            goal = np.array([pre[0], pre[1], safe_z])
-            if near(goal, 0.02):
-                self.phase = "down_pre"
-        if self.phase == "down_pre":
-            goal = pre
-            if near(goal, 0.01) and np.linalg.norm(rotation_error(obs_hand_mat(obs), pick_frame)) < 0.08:
-                self.phase, self.timer = "slide", 0
-        if self.phase == "slide":  # slide the palm under the ball
-            goal = under
-            if near(goal, 0.006) or (near(goal, 0.012) and self.timer > 25):
-                self.phase, self.timer = "scoop", 0
-                self.scoop_goal = under + [0, 0, 0.05]
-        if self.phase == "scoop":  # lift the ball off the stand and close the hand over it
-            goal, grip = self.scoop_goal, 1.0
-            if near(goal, 0.015) and self.timer > 8:
+            goal, frame_cmd = np.array([site[0], site[1], max(safe_z, site[2])]), hand
+            if site[2] > safe_z - 0.03:
+                self.phase = "traverse"
+        if self.phase == "traverse":
+            goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), hand
+            if np.linalg.norm(goal[:2] - site[:2]) < 0.03:
+                self.phase = "turn"
+        if self.phase == "turn":
+            goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), frame
+            if aligned:
+                self.phase = "over"
+        if self.phase == "over":
+            goal, frame_cmd = self.site_for(pinch_at_cap + [0, 0, 0.06], frame), frame
+            if near(goal, 0.01) and aligned:
+                self.phase = "down"
+        if self.phase == "down":
+            goal, frame_cmd, speed = self.site_for(pinch_at_cap, frame), frame, 0.5 * cfg.max_step
+            if near(goal, 0.004) or (near(goal, 0.008) and self.timer > 20):
+                self.phase, self.timer = "pinch", 0
+        if self.phase == "pinch":  # close progressively, so the cap is not flicked away
+            goal, frame_cmd = self.site_for(pinch_at_cap, frame), frame
+            grip = min(1.0, -1.0 + 2.0 * self.timer / self.close_steps)
+            if self.timer > self.close_steps + 2:
+                self.phase = "lift"
+                self.lift_goal = self.site_for(cap + [0, 0, 0.10], frame)
+        if self.phase == "lift":
+            goal, frame_cmd, grip = self.lift_goal, frame, 1.0
+            if near(goal, 0.015) or site[2] > self.lift_goal[2] - 0.03:
                 self.phase = "windup"
-        if self.phase == "windup":  # turn towards the cup while moving to the wind-up point
-            goal, grip, frame = windup_pt, 1.0, throw_frame
-            if near(goal, 0.012) and np.linalg.norm(rotation_error(obs_hand_mat(obs), throw_frame)) < 0.08:
-                self.phase, self.timer = ("settle" if self.open_before_swing else "swing"), 0
-        if self.phase == "settle":  # open the hand while still: the ball rests on the flat palm
-            goal, frame = windup_pt, throw_frame
-            if self.timer > 6:
+        if self.phase == "windup":
+            if not self.aimed:  # aim at the top cup as it is now: it may have settled since the plan was made
+                self.plan, self.aimed = self.release_plan(mouth, self.base_axis(obs)), True
+                R_pt, v = self.plan
+                vhat = v / np.linalg.norm(v)
+                windup_pt = R_pt - vhat * self.windup
+            goal, frame_cmd, grip = self.site_for(windup_pt, frame), frame, 1.0
+            if near(goal, 0.01) and aligned:
+                self.phase, self.timer = "settle", 0
+        if self.phase == "settle":
+            goal, frame_cmd, grip = self.site_for(windup_pt, frame), frame, 1.0
+            if self.timer > 3:
                 self.phase, self.timer = "swing", 0
-        if self.phase == "swing" and self.ballistic:
-            # Time-parameterised path: accelerate from the wind-up point to reach velocity v at R, then carry the
-            # ball along its own free-flight parabola (it floats on the palm) and drop the hand away underneath.
-            dt, tau = cfg.control_dt, self.timer * cfg.control_dt
+        if self.phase == "swing":
+            # Constant acceleration from rest at the wind-up point, reaching speed_gain * v at R; then the hand
+            # carries the cap along its own free-flight parabola while the fingers open, so they do not push it.
+            tau = self.timer * cfg.control_dt
             v_cmd = self.speed_gain * v
             t_acc = 2 * self.windup / np.linalg.norm(v_cmd)
+            grip = 1.0
             if tau <= t_acc:
-                s_ = tau / t_acc  # constant acceleration from rest
-                goal = windup_pt + (R_pt - windup_pt) * s_ ** 2
+                p = windup_pt + (R_pt - windup_pt) * (tau / t_acc) ** 2
             else:
                 tb = tau - t_acc
-                goal = R_pt + v_cmd * tb - np.array([0, 0, 0.5 * GRAVITY * tb ** 2])
+                p = R_pt + v_cmd * tb - np.array([0, 0, 0.5 * GRAVITY * tb ** 2])
+                grip = -1.0
                 if tb > self.carry_time:
-                    self.phase, self.drop_from = "release", goal
-            frame, speed = throw_frame, None
-        elif self.phase == "swing":
-            along = np.dot(site - R_pt, vhat)
-            if not self.open_before_swing:
-                grip = 1.0 if along < -self.open_lead else -1.0  # open while still moving
-            goal, frame, speed = site + self.speed_gain * v * cfg.control_dt, throw_frame, None
-            if along > self.follow:
-                self.phase, self.timer = "release", 0
-        if self.phase == "release":  # stop (or drop away under the ball); the ball flies on
-            goal = self.drop_from - [0, 0, 0.10] if self.ballistic else site
-            frame, speed = throw_frame, None
-        return to_action(obs, goal, frame, grip, cfg.toss_max_step, cfg, speed=speed)
+                    self.phase, self.drop_from = "release", p
+            goal, frame_cmd, speed = self.site_for(p, frame), frame, None
+        if self.phase == "release":  # stop, and pull the hand up and back out of the cap's way
+            goal = self.site_for(self.drop_from - 0.08 * throw_dir + [0, 0, 0.08], frame)
+            frame_cmd, speed = frame, None
+        return to_action(obs, goal, frame_cmd, grip, cfg.toss_max_step, cfg, speed=speed)
 
 
 def expert_for(obs: np.ndarray, place: PlaceExpert, toss: TossExpert):

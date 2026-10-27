@@ -37,13 +37,15 @@ class G1TaskConfig:
     # Supply spots: each cup is approached from behind (-x) and the fingertips reach ~11 cm past it, so the top
     # cup waits further forward, clear of the corridors used for A and B.
     supply_cups: tuple[tuple[float, float], ...] = ((0.33, -0.20), (0.31, -0.37), (0.53, -0.28))  # A, B, top
-    cap_spot: tuple[float, float] = (0.28, 0.08)  # the cap lies flat on the table here
+    cap_spot: tuple[float, float] = (0.28, -0.06)  # the cap lies flat on the table here, near where it is thrown from
     layout_jitter: float = 0.015
-    # How precisely the pyramid must be built (from settling tests: with the base cups up to 2 cm further apart
-    # than nominal the top cup still stands, wedged up to 2.5 cm lower between them).
+    # How precisely the pyramid must be built. As with real party cups, the top cup wedges into the V between
+    # the two base cups' slanted walls rather than balancing on their bottoms, so it can sit lower and a little
+    # off-centre and still stand (settling tests: up to 2.5 cm off-centre and 4 cm lower, upright). A fallen
+    # top cup ends on the table (12 cm lower) or tilted.
     spacing_tol: tuple[float, float] = (0.012, 0.016)  # base cups' centre distance vs nominal: below, above
-    top_tol: float = 0.02  # top cup's horizontal distance from the base cups' midpoint
-    top_sink: float = 0.03  # how far the top cup may sit below the base cups' tops
+    top_tol: float = 0.03  # top cup's horizontal distance from the base cups' midpoint
+    top_sink: float = 0.05  # how far the top cup may sit below the base cups' tops
 
     # Side power grasp: the hand points along its x axis, palm facing +y, hand z up. Grasp height as a
     # fraction of the cup's height (measured from the table side of the cup). The cups taper, so the base cups

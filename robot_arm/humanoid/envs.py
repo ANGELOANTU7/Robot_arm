@@ -14,7 +14,8 @@ import mujoco
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
-from robot_arm.humanoid.controller import G1HandController, hand_targets, rotation_error, rotvec_to_mat
+from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch_frame, rotation_error,
+                                           rotvec_to_mat, site_for_pinch)
 from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout, base_pair_ok,
                                         base_spacing, cap_in_cup, cup_axis, cup_grasp_point, cup_in_place,
                                         pyramid_standing, top_cup_resting)
@@ -54,6 +55,13 @@ class G1PyramidEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         self.ids = G1Ids(self.model)
         self.controller = G1HandController(self.model, self.ids)
+        # Arm posture for the cap pinch (hand turned palm-down over the cap spot): the IK's null space pulls
+        # towards it while tossing, so the arm does not wander into its joint limits while turning the hand.
+        u = np.array([np.cos(cfg.pyramid_yaw), np.sin(cfg.pyramid_yaw), 0.0])
+        R = pinch_frame(-u)
+        above_cap = np.array([*cfg.cap_spot, cfg.table_height + 0.12])
+        self.pinch_posture = self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R), R,
+                                                   q_start=self.controller.home, iters=400)
         self.render_mode, self.camera = render_mode, camera
         self._renderer = mujoco.Renderer(self.model, height, width) if render_mode else None
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)
@@ -132,6 +140,7 @@ class G1PyramidEnv(gym.Env):
 
         for i in range(m.nu):
             d.ctrl[i] = d.qpos[m.jnt_qposadr[m.actuator_trnid[i, 0]]]
+        self.pinch_ready = False
         d.ctrl[ids.hand_ctrl] = hand_targets(-1.0)
         mujoco.mj_forward(m, d)
         mujoco.mj_step(m, d, nstep=100)  # let everything settle
@@ -200,10 +209,17 @@ class G1PyramidEnv(gym.Env):
         # Interpolate the command over the control period so fast motions are tracked smoothly.
         n = cfg.ik_substeps
         rot = rotation_error(prev_mat, self.cmd_mat)
+        # The hand takes the pinch shape for the cap only once it is above the pyramid: changing shape right
+        # after letting go of the top cup would knock it with the fingers.
+        if self.stage == 3 and not self.pinch_ready:
+            self.pinch_ready = self.site_pos[2] > cfg.table_height + 2 * cfg.cup.height + 0.05
+        pinch = self.stage == 3 and self.pinch_ready
+        self.controller.posture = self.pinch_posture if pinch else self.controller.home
         for i in range(1, n + 1):
             f = i / n
             self.controller.apply(self.data, prev_pos + f * (self.cmd_pos - prev_pos),
-                                  rotvec_to_mat(f * rot) @ prev_mat, self.hand_state, cfg.control_dt / n)
+                                  rotvec_to_mat(f * rot) @ prev_mat, self.hand_state, cfg.control_dt / n,
+                                  pinch=pinch)
             mujoco.mj_step(self.model, self.data, nstep=cfg.frame_skip // n)
         self.steps += 1
 
@@ -233,11 +249,13 @@ class G1PyramidEnv(gym.Env):
             self.release_distance = float(np.linalg.norm(self.cap_pos[:2] - mouth[:2]))
 
     def _others_in_place(self) -> bool:
-        """Cups finished in earlier stages are still where they were left."""
+        """Cups finished in earlier stages are still where they were left. The top cup only has to stay resting
+        on the base cups: it may settle a little lower between them after it is let go."""
         for k, pos in self.placed.items():
-            up = ORIENTATIONS[k] is UP
-            tilt = TOP_TILT_DEG if k == 2 else 12.0
-            if not cup_in_place(self.data, self.ids.cup_bodies[k], pos, up, pos_tol=0.012, tilt_tol_deg=tilt):
+            if k == 2:
+                if not top_cup_resting(self.data, self.ids.cup_bodies, self.cfg):
+                    return False
+            elif not cup_in_place(self.data, self.ids.cup_bodies[k], pos, False, pos_tol=0.012, tilt_tol_deg=12.0):
                 return False
         return True
 
