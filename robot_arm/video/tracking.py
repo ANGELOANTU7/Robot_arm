@@ -20,7 +20,7 @@ COLOR_RANGES = {
     "yellow": [((22, 100, 120), (35, 255, 255))],
     "green": [((40, 80, 60), (85, 255, 255))],
     "blue": [((95, 120, 50), (130, 255, 255))],
-    "red": [((0, 130, 90), (5, 255, 255)), ((170, 130, 90), (179, 255, 255))],
+    "red": [((0, 120, 70), (6, 255, 255)), ((158, 120, 70), (179, 255, 255))],  # party cups read ~H 165-175
     "pink": [((140, 60, 120), (170, 255, 255))],
 }
 
@@ -91,11 +91,18 @@ def color_mask(frame_bgr: np.ndarray, color: str) -> np.ndarray:
 
 
 def detect_blob(frame_bgr: np.ndarray, color: str, min_area: float = 30.0,
-                near: np.ndarray | None = None, max_jump: float | None = None) -> Blob | None:
-    """Largest blob of the given color (or the one closest to `near`, if given, within `max_jump` pixels)."""
-    mask = color_mask(frame_bgr, color)
+                near: np.ndarray | None = None, max_jump: float | None = None, compact: bool = False,
+                mask: np.ndarray | None = None) -> Blob | None:
+    """Largest blob of the given color (or the one closest to `near`, if given, within `max_jump` pixels).
+
+    compact: only roundish blobs (a bottle cap seen from any side, not a pen). `mask` replaces the color mask."""
+    mask = color_mask(frame_bgr, color) if mask is None else mask
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
     candidates = [i for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= min_area]
+    if compact:
+        w, h = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
+        candidates = [i for i in candidates if max(w[i], h[i]) <= 3 * min(w[i], h[i])
+                      and stats[i, cv2.CC_STAT_AREA] >= 0.5 * w[i] * h[i]]
     if near is not None:
         candidates = [i for i in candidates if max_jump is None or np.linalg.norm(centroids[i] - near) < max_jump]
     if not candidates:

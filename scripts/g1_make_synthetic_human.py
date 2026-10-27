@@ -2,7 +2,7 @@
 
     python scripts/g1_make_synthetic_human.py --n 10      # -> data/processed/human_pyramid_synthetic/
 
-Each demo is a scripted human motion (place a base cup, place the top cup, toss the ball) rendered into what the
+Each demo is a scripted human motion (place a base cup, place the top cup, throw the cap) rendered into what the
 trackers would see from a camera and reconstructed by the same code as real clips, so it carries realistic errors.
 """
 

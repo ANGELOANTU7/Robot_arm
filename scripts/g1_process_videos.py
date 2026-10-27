@@ -18,9 +18,10 @@ import numpy as np
 from robot_arm.video.calibrate import detect_markers
 from robot_arm.video.process import read_video
 from robot_arm.video.skill_process import SKILLS, SkillColors, process_skill_video
+from robot_arm.video.skills import Props
 from robot_arm.video.tracking import COLOR_RANGES, color_mask
 
-OVERLAY_BGR = {"cup_a": (255, 0, 0), "cup_b": (0, 255, 0), "top": (0, 255, 255), "ball": (0, 140, 255)}
+OVERLAY_BGR = {"cups": (0, 255, 0), "cap": (255, 255, 0)}
 
 
 def check(video: Path, out_dir: Path, colors: SkillColors) -> None:
@@ -39,7 +40,7 @@ def check(video: Path, out_dir: Path, colors: SkillColors) -> None:
     out = out_dir / f"{video.stem}_check.png"
     cv2.imwrite(str(out), frame)
     print(f"{video.name}: markers found {sorted(markers)} (need at least 2, ideally 4); " + ", ".join(report)
-          + f". Each object should be one solid patch in {out}")
+          + f". In {out} the cups should be solid green and the cap solid cyan, with nothing else lit up")
 
 
 def main():
@@ -47,21 +48,22 @@ def main():
     p.add_argument("videos", nargs="+", type=Path)
     p.add_argument("--out", type=Path, default=Path("data/processed/human_pyramid"))
     p.add_argument("--skill", choices=SKILLS, help="skill of all given clips (default: from the file name)")
-    p.add_argument("--cup-a-color", default="blue", choices=sorted(COLOR_RANGES))
-    p.add_argument("--cup-b-color", default="green", choices=sorted(COLOR_RANGES))
-    p.add_argument("--top-color", default="yellow", choices=sorted(COLOR_RANGES))
-    p.add_argument("--ball-color", default="orange", choices=sorted(COLOR_RANGES))
-    p.add_argument("--cup-height-cm", type=float, default=7.5)
-    p.add_argument("--cup-diameter-cm", type=float, default=6.2, help="outer diameter at the mouth (the rim)")
-    p.add_argument("--ball-diameter-cm", type=float, default=4.0)
-    p.add_argument("--ball-rest-height-cm", type=float, default=None,
-                   help="height of the ball's centre at the start of toss clips (default: lying on the table)")
+    p.add_argument("--cup-color", default="red", choices=sorted(COLOR_RANGES))
+    p.add_argument("--cap-color", default="blue", choices=sorted(COLOR_RANGES))
+    p.add_argument("--cup-height-cm", type=float, default=12.0)
+    p.add_argument("--cup-mouth-cm", type=float, default=9.0, help="outer diameter at the mouth (the rim)")
+    p.add_argument("--cup-base-cm", type=float, default=5.0, help="outer diameter of the bottom")
+    p.add_argument("--lip-mm", type=float, default=5.0, help="height of the white rolled rim at the mouth")
+    p.add_argument("--cap-diameter-cm", type=float, default=2.8)
+    p.add_argument("--cap-height-cm", type=float, default=1.2)
     p.add_argument("--marker-mm", type=float, default=50.0, help="measured side of a printed marker")
     p.add_argument("--focal-px", type=float, help="camera focal length in pixels (at the processed width)")
     p.add_argument("--hfov-deg", type=float, help="camera horizontal field of view, if focal length unknown")
     p.add_argument("--check", action="store_true", help="only check markers and color masks on frame 0")
     args = p.parse_args()
-    colors = SkillColors(args.cup_a_color, args.cup_b_color, args.top_color, args.ball_color)
+    colors = SkillColors(args.cup_color, args.cap_color)
+    props = Props(args.cup_height_cm / 100, args.cup_mouth_cm / 200, args.cup_base_cm / 200, args.lip_mm / 1000,
+                  args.cap_diameter_cm / 200, args.cap_height_cm / 100)
     args.out.mkdir(parents=True, exist_ok=True)
 
     summary = {}
@@ -70,11 +72,8 @@ def main():
             check(video, args.out, colors)
             continue
         try:
-            demo, calib = process_skill_video(
-                video, args.out, args.skill, colors, cup_height=args.cup_height_cm / 100,
-                cup_radius=args.cup_diameter_cm / 200, ball_radius=args.ball_diameter_cm / 200,
-                ball_rest_height=None if args.ball_rest_height_cm is None else args.ball_rest_height_cm / 100,
-                marker_mm=args.marker_mm, focal_px=args.focal_px, hfov_deg=args.hfov_deg)
+            demo, calib = process_skill_video(video, args.out, args.skill, colors, props, marker_mm=args.marker_mm,
+                                              focal_px=args.focal_px, hfov_deg=args.hfov_deg)
         except Exception as e:  # keep going with the other clips
             print(f"{video.name}: FAILED - {e}")
             summary[video.name] = {"error": str(e)}
@@ -86,8 +85,13 @@ def main():
         if demo.skill != "toss":
             row["cup_moved_cm"] = round(100 * float(np.linalg.norm(demo.obj_end[:2] - demo.obj_start[:2])), 1)
         else:
+            d = demo.release_pos - demo.obj_end
             row["release_speed_mps"] = round(float(np.linalg.norm(demo.release_vel)), 2)
-            row["release_to_mouth_cm"] = round(100 * float(np.linalg.norm(demo.release_pos - demo.obj_end)), 1)
+            row["release_dist_cm"] = round(100 * float(np.linalg.norm(d[:2])), 1)
+            row["release_above_mouth_cm"] = round(100 * float(d[2]), 1)
+            if demo.base_axis is not None:  # 0 = released straight along the base cups' line
+                cos = abs(np.dot(d[:2], demo.base_axis[:2])) / max(np.linalg.norm(d[:2]), 1e-6)
+                row["off_line_deg"] = round(float(np.degrees(np.arccos(np.clip(cos, 0, 1)))), 1)
         summary[video.name] = row
         print(f"{video.name}: {row}")
     if not args.check:

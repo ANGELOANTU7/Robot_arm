@@ -14,10 +14,10 @@ Placing a cup. The human's hand path is mapped with two anchors, as for the Pand
 - A closed-loop tracking expert follows the path. Its grasp, the fine alignment over the target, lowering,
   and release are triggered by the state, as the Panda work showed is necessary for clean labels.
 
-Tossing the ball. The G1 cannot copy a palm-down pick from the table (its ball sits on a pedestal and is
-scooped up palm-up), so the human contributes the throw's style:
-- how high and how far from the cup the ball is released, and from which side;
-- how long the ball flies (the arc);
+Throwing the cap. The pinch itself is the robot's own (the Dex3 has three fingers, and where they meet the cap
+is a matter of millimetres), so the human contributes the throw's style:
+- how far from the mouth and how high above it the cap is released, and how far off the base cups' line;
+- how long the cap flies (the arc);
 - how long the wind-up is.
 The values are clipped to the region where the G1's throw works (TOSS_BOUNDS). The release velocity is
 ballistic for the robot's own release point, and the aim is calibrated per style in simulation
@@ -303,13 +303,19 @@ TOSS_BOUNDS = {"release_dist": (0.28, 0.32), "release_height": (0.14, 0.18), "re
 def throw_style(demo: SkillDemo, scale: float = ARM_SCALE) -> dict:
     """The human throw's style in the robot's terms (before clipping to TOSS_BOUNDS).
 
-    - Release distance and height (the ball above the mouth) are properties of the throw, so they stay as they
-      are. The wind-up is an arm motion, so it is scaled.
-    - The bearing is measured from the direction towards the thrower. The person faces -y in the video's table
-      frame and the robot faces +x, so a release on the person's right maps to one on the robot's right."""
+    - Release distance (horizontal, from the mouth's centre) and height above the mouth are properties of the
+      throw, so they stay as they are; the flight time follows from the distance and the horizontal speed. The
+      wind-up is an arm motion, so it is scaled.
+    - The bearing is the release point's angle from the base cups' line (0: straight along it), on whichever side
+      the person threw from; the robot throws from cup B's side. Without the base cups in view it is taken as 0,
+      as the recording guide asks for a throw along them."""
     mouth, rel = demo.obj_end, demo.release_pos
     d = rel[:2] - mouth[:2]
-    bearing_h = np.arctan2(d[1], d[0])
+    axis = demo.base_axis
+    bearing = 0.0
+    if axis is not None:
+        a = axis[:2] * (1.0 if np.dot(axis[:2], d) >= 0 else -1.0)  # pointing to the release side
+        bearing = float(np.arctan2(a[0] * d[1] - a[1] * d[0], np.dot(a, d)))
     v_h = np.linalg.norm(demo.release_vel[:2])
     flight = np.linalg.norm(d) / max(v_h, 1e-3)
     i_r = _index(demo.t, demo.t_release)
@@ -320,21 +326,13 @@ def throw_style(demo: SkillDemo, scale: float = ARM_SCALE) -> dict:
     i_w = lo + int(np.argmin(speed[lo:i_r])) if i_r > lo else i_r
     windup = np.linalg.norm(demo.palm[i_r] - demo.palm[i_w])
     return {"release_dist": float(np.linalg.norm(d)), "release_height": float(rel[2] - mouth[2]),
-            "release_bearing": float(np.angle(np.exp(1j * (bearing_h + np.pi / 2)))), "flight_time": float(flight),
-            "windup": scale * float(windup)}
+            "release_bearing": bearing, "flight_time": float(flight), "windup": scale * float(windup)}
 
 
 def toss_params(style: dict, bounds: dict | None = None) -> dict:
     """TossExpert parameters: the style clipped to where the G1's throw works."""
     bounds = TOSS_BOUNDS if bounds is None else bounds
-    out = {}
-    for k, (lo, hi) in bounds.items():
-        v = style[k]
-        if k == "release_bearing":
-            mid = (lo + hi) / 2
-            v = mid + np.angle(np.exp(1j * (v - mid)))  # the equivalent angle nearest the box
-        out[k] = float(np.clip(v, lo, hi))
-    return out
+    return {k: float(np.clip(style[k], lo, hi)) for k, (lo, hi) in bounds.items()}
 
 
 def _toss_episode(args):
@@ -370,7 +368,7 @@ def calibrate_aim(params: dict, rounds: int = 3, episodes: int = 16, seed: int =
     Returns the parameters with the new `aim_offset`, plus `aim_history`: the aim and the success rate of each
     round. A style whose balls never come down near the cup keeps its aim; its release point is probably
     unreachable."""
-    aim = np.array(params.get("aim_offset", (0.0, 0.04, 0.0)), float)
+    aim = np.array(params.get("aim_offset", (0.0, 0.0, 0.0)), float)
     history, errors, hits = [], [], []
     for r in range(rounds):
         p = {**params, "aim_offset": tuple(aim)}
@@ -413,7 +411,7 @@ class G1Retargeter:
     @property
     def fine(self) -> bool:
         if self.stage == 3:
-            return self.toss.phase in ("slide", "scoop", "settle", "swing", "release")
+            return self.toss.phase in ("down", "pinch", "settle", "swing", "release")
         return self.tracker is not None and self.tracker.fine
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:

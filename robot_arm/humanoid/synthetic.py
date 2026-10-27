@@ -1,7 +1,8 @@
 """Synthetic human skill demonstrations for the cup pyramid (to try the pipeline before recording, and tests).
 
 Table frame as in the videos: origin at the marker sheet, the camera on the -y side, the person on the +y side
-reaching towards -y. The person's right is -x.
+reaching towards -y. The person's right is -x. The base cups stand side by side across the camera's view, cup B
+on the person's right, so a sideways throw along them (from B's side) crosses the image.
 """
 
 import numpy as np
@@ -9,12 +10,17 @@ from scipy.spatial.transform import Rotation
 
 from robot_arm.synthetic import min_jerk
 from robot_arm.video.calibrate import Camera
-from robot_arm.video.skills import GRAVITY, SkillDemo, SkillTrack
+from robot_arm.video.skills import GRAVITY, PINCH_TIPS, Props, SkillDemo, SkillTrack
 from robot_arm.video.synthetic_hand import hand_landmarks
 
-CUP_H, CUP_R = 0.075, 0.031  # the person's cups (outer radius at the table-side rim)
-BALL_R = 0.02
-BALL_DEPTH = BALL_R + 0.008  # ball centre from the palm centre along the palm normal while held
+PROPS = Props()  # the person's party cups and bottle cap
+H = PROPS.cup_height
+SUPPLY = {"A": (-0.24, 0.36), "B": (-0.40, 0.20), "top": (-0.30, 0.50)}  # where each cup waits (person's right)
+
+
+def pinch_offset(curl: float) -> np.ndarray:
+    """The point between the thumb tip and the index fingertip in the palm frame (where a pinched cap is)."""
+    return hand_landmarks(curl)[list(PINCH_TIPS)].mean(axis=0)
 
 
 def side_grasp_rot(yaw: float = 0.0) -> np.ndarray:
@@ -25,19 +31,16 @@ def side_grasp_rot(yaw: float = 0.0) -> np.ndarray:
     return np.column_stack([x, np.cross(z, x), z])
 
 
-def palm_down_rot() -> np.ndarray:
-    """Fingers forward, palm facing down (picking a ball from above)."""
-    x = np.array([0.0, -1.0, 0.0])
+def palm_down_rot(yaw: float = 0.0) -> np.ndarray:
+    """Fingers forward, palm facing down (pinching the cap from above); `yaw` turns it about z."""
+    c, s = np.cos(yaw), np.sin(yaw)
+    x = np.array([s, -c, 0.0])
     z = np.array([0.0, 0.0, -1.0])
     return np.column_stack([x, np.cross(z, x), z])
 
 
-def palm_up_rot(direction: np.ndarray) -> np.ndarray:
-    """Palm facing up, fingers along the horizontal part of `direction` (an underhand toss)."""
-    x = np.array([direction[0], direction[1], 0.0])
-    x /= np.linalg.norm(x)
-    z = np.array([0.0, 0.0, 1.0])
-    return np.column_stack([x, np.cross(z, x), z])
+def _rot2(a: float) -> np.ndarray:
+    return np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
 
 
 def _slerp(R0: np.ndarray, R1: np.ndarray, s: np.ndarray) -> np.ndarray:
@@ -63,24 +66,26 @@ def _segments(start_pos, start_clos, start_rot, segments, fps):
 
 
 def pyramid_layout(rng: np.random.Generator) -> dict:
-    """Where the person's pyramid goes: base cups A and B (diagonal, like the robot's) and the top cup."""
-    pyr = np.array([rng.uniform(-0.04, 0.04), rng.uniform(0.15, 0.22)])
-    u = np.array([np.cos(-2.4), np.sin(-2.4)])
-    spacing = 2 * CUP_R + rng.uniform(0.004, 0.012)
-    return {"A": pyr - u * spacing / 2, "B": pyr + u * spacing / 2, "top": pyr}
+    """Where the person's pyramid goes: base cups A and B (A on the person's left), the top cup, and the unit
+    vector from A to B."""
+    pyr = np.array([rng.uniform(-0.04, 0.04), rng.uniform(0.17, 0.23)])
+    u = _rot2(np.pi + rng.uniform(-0.15, 0.15)) @ np.array([1.0, 0.0])
+    spacing = 2 * PROPS.mouth_radius + rng.uniform(0.002, 0.008)
+    return {"A": pyr - u * spacing / 2, "B": pyr + u * spacing / 2, "top": pyr, "axis": u}
 
 
 def place_demo(rng: np.random.Generator, kind: str = "A", fps: float = 30.0) -> tuple[SkillDemo, list]:
     """Pick a cup from the supply area and put it in its pyramid spot. kind: 'A', 'B' or 'top'.
 
-    Returns the demo and the other (static) cups in view as table-side rim centres."""
+    Returns the demo and the other (static) cups in view: (name, table-side rim centre, mouth up)."""
     layout = pyramid_layout(rng)
-    supply = {"A": [-0.20, 0.26], "B": [-0.24, 0.16], "top": [-0.16, 0.34]}[kind]
-    start = np.array([*(np.asarray(supply) + rng.uniform(-0.02, 0.02, 2)), 0.0])
-    end = np.array([*layout[kind], CUP_H if kind == "top" else 0.0])
-    static = {"A": [[-0.26, 0.10, 0.0]], "B": [[*layout["A"], 0.0]],
-              "top": [[*layout["A"], 0.0], [*layout["B"], 0.0]]}[kind]
-    grasp_h = CUP_H * (0.7 if kind == "top" else 0.6)
+    start = np.array([*(np.asarray(SUPPLY[kind]) + rng.uniform(-0.02, 0.02, 2)), 0.0])
+    end = np.array([*layout[kind], H if kind == "top" else 0.0])
+    supply = lambda k: (k, np.array([*SUPPLY[k], 0.0]), k == "top")  # noqa: E731
+    pyramid = lambda k: (k, np.array([*layout[k], 0.0]), False)  # noqa: E731
+    static = {"A": [supply("B"), supply("top")], "B": [pyramid("A"), supply("top")],
+              "top": [pyramid("A"), pyramid("B")]}[kind]
+    grasp_h = H * rng.uniform(0.45, 0.6)
     rot = side_grasp_rot(rng.uniform(-0.2, 0.2))
     palm_off = -0.05 * rot[:, 2]  # the palm sits beside the cup, the cup on the palm's side
     grasp = start + [0, 0, grasp_h] + palm_off
@@ -98,64 +103,68 @@ def place_demo(rng: np.random.Generator, kind: str = "A", fps: float = 30.0) -> 
         (place, rng.uniform(0.4, 0.6), closed_c, rot),
         (place, rng.uniform(0.1, 0.2), closed_c, rot),  # settle
         (place, rng.uniform(0.2, 0.3), open_c, rot),  # open
-        (place + [-0.04, 0.06, 0.08], rng.uniform(0.4, 0.6), 0.15, rot),
-        (place + [-0.04, 0.06, 0.08], 0.6, 0.15, rot),
+        (place + [-0.04, 0.10, 0.08], rng.uniform(0.4, 0.6), 0.15, rot),
+        (rest + [0, 0.15, 0.05], 0.6, 0.15, rot),  # out of the way for the still frames at the end
+        (rest + [0, 0.15, 0.05], 0.8, 0.15, rot),
     ]
     palm, clos, rots, ends = _segments(rest, 0.15, rot, segs, fps)
     t = np.arange(len(palm)) / fps
     skill = "place_top" if kind == "top" else "place_base"
     demo = SkillDemo(skill, t, palm, rots, clos, start, end, float(t[ends[2]]), float(t[ends[7]]),
                      info={"synthetic": 1.0, "grasp_height": grasp_h})
-    return demo, [np.array(s, float) for s in static]
+    return demo, static
 
 
-def toss_demo(rng: np.random.Generator, fps: float = 60.0) -> SkillDemo:
-    """Pick the ball off the table, swing it palm-up and toss it underhand into the top cup."""
-    mouth = np.array([*pyramid_layout(rng)["top"], 2 * CUP_H])
-    ball = np.array([rng.uniform(-0.22, -0.16), rng.uniform(0.22, 0.30), BALL_R])
-    # Released on the person's right of the cup, so the ball flies across the camera's view.
-    bearing = np.pi - rng.uniform(0.0, 0.5)
-    dist = rng.uniform(0.25, 0.30)
-    R = mouth + np.array([dist * np.cos(bearing), dist * np.sin(bearing), rng.uniform(0.06, 0.12)])
-    ball_release = R + [0, 0, BALL_DEPTH]  # palm up: the ball rests on the palm
-    tf = rng.uniform(0.28, 0.36)
-    v = (mouth - ball_release + np.array([0, 0, 0.5 * GRAVITY * tf * tf])) / tf
+def toss_demo(rng: np.random.Generator, fps: float = 60.0) -> tuple[SkillDemo, list]:
+    """Pinch the cap off the table and throw it sideways into the top cup: released on cup B's side, 5-30 cm
+    from the mouth, flying along the base cups. Returns the demo and the pyramid's cups (as place_demo)."""
+    layout = pyramid_layout(rng)
+    u = np.array([*layout["axis"], 0.0])
+    mouth = np.array([*layout["top"], 2 * H])
+    cap = np.array([rng.uniform(-0.32, -0.24), rng.uniform(0.06, 0.12), PROPS.cap_height / 2])
+    side = np.array([*(_rot2(rng.uniform(-0.25, 0.25)) @ u[:2]), 0.0])
+    R = mouth + rng.uniform(0.05, 0.30) * side + [0, 0, rng.uniform(0.04, 0.12)]
+    tf = rng.uniform(0.22, 0.34)
+    v = (mouth - R + np.array([0, 0, 0.5 * GRAVITY * tf * tf])) / tf
+    down = palm_down_rot(rng.uniform(-0.2, 0.2))
+    c_hold = rng.uniform(0.45, 0.6)
+    off = down @ pinch_offset(c_hold)  # palm centre -> cap while pinched
     # Swing: constant acceleration from rest at the wind-up point, reaching v at R after n frames.
-    n_acc = int(round(rng.uniform(0.18, 0.26) * fps))
+    n_acc = int(round(rng.uniform(0.15, 0.22) * fps))
     t_acc = n_acc / fps
     windup = R - v * t_acc / 2
-    down, up = palm_down_rot(), palm_up_rot(v)
-    grab = ball - BALL_DEPTH * down[:, 2]
+    grab = cap - off
     rest = grab + [0.0, 0.18, 0.15]
     segs = [
         (rest, rng.uniform(0.6, 0.9), 0.15, down),  # still
         (grab + [0, 0.02, 0.06], rng.uniform(0.5, 0.7), 0.1, down),
         (grab, 0.3, 0.1, down),
-        (grab, 0.25, 0.8, down),  # grab
-        (grab + [0, 0, 0.08], 0.3, 0.8, down),  # lift
-        (windup, rng.uniform(0.6, 0.8), 0.6, up),  # turn palm-up, cupped hand
-        (windup, 0.2, 0.6, up),
+        (grab, 0.25, c_hold, down),  # pinch
+        (grab + [0, 0, 0.08], 0.3, c_hold, down),  # lift
+        (windup - off, rng.uniform(0.5, 0.8), c_hold, down),
+        (windup - off, 0.2, c_hold, down),
     ]
     palm, clos, rots, ends = _segments(rest, 0.15, down, segs, fps)
     tt = np.arange(1, n_acc + 1)[:, None] / fps
-    swing = windup + 0.5 * (v / t_acc) * tt ** 2
-    t_stop = 0.15  # follow-through: the hand slows to a stop
-    tt = np.arange(1, int(0.4 * fps))[:, None] / fps
-    tt = np.minimum(tt, t_stop)
-    follow = R + v * tt - 0.5 * (v / t_stop) * tt ** 2
+    swing = windup + 0.5 * (v / t_acc) * tt ** 2 - off
+    t_stop = 0.15  # follow-through: the hand slows to a stop while the fingers open
+    tt = np.minimum(np.arange(1, int(0.6 * fps))[:, None] / fps, t_stop)
+    follow = R - off + v * tt - 0.5 * (v / t_stop) * tt ** 2
     release_idx = len(palm) + n_acc - 1
     palm = np.concatenate([palm, swing, follow])
-    clos = np.concatenate([clos, np.full(n_acc, 0.6), np.linspace(0.6, 0.1, len(follow))])
-    rots = np.concatenate([rots, np.repeat(up[None], n_acc + len(follow), 0)])
+    opening = np.interp(np.arange(len(follow)), [0, int(0.1 * fps)], [c_hold, 0.1])
+    clos = np.concatenate([clos, np.full(n_acc, c_hold), opening])
+    rots = np.concatenate([rots, np.repeat(down[None], n_acc + len(follow), 0)])
     t = np.arange(len(palm)) / fps
-    return SkillDemo("toss", t, palm, rots, clos, ball, mouth, float(t[ends[2]]), float(t[release_idx]), v,
-                     ball_release, {"synthetic": 1.0})
+    demo = SkillDemo("toss", t, palm, rots, clos, cap, mouth, float(t[ends[2]]), float(t[release_idx]), v, R,
+                     {"synthetic": 1.0, "pinch_closure": c_hold, "axis_x": u[0], "axis_y": u[1]})
+    return demo, [("A", np.array([*layout["A"], 0.0]), False), ("B", np.array([*layout["B"], 0.0]), False)]
 
 
-def look_at_camera(pos=(-0.05, -0.85, 0.55), look=(-0.06, 0.18, 0.12), width: int = 1280, height: int = 720,
+def look_at_camera(pos=(-0.05, -0.85, 0.55), look=(-0.10, 0.22, 0.10), width: int = 1280, height: int = 720,
                    focal: float = 1000.0) -> Camera:
     """A pinhole camera at `pos` looking at `look` (table frame). The default frames the whole skill workspace:
-    the sheet, the cups, the reach above them, the wind-up and the ball's flight."""
+    the sheet, the supply cups, the pyramid, the reach above them and the cap's flight."""
     pos, look = np.array(pos, float), np.array(look, float)
     fwd = (look - pos) / np.linalg.norm(look - pos)
     right = np.cross(fwd, [0, 0, 1.0])
@@ -177,33 +186,36 @@ def synthetic_skill_demos(rng: np.random.Generator, n_per_skill: int = 10, camer
     out = []
     for i in range(n_per_skill):
         for kind, name in ((["A", "B"][i % 2], "place_base"), ("top", "place_top"), (None, "toss")):
-            if kind is None:
-                truth, static = toss_demo(rng), []
-            else:
-                truth, static = place_demo(rng, kind)
+            truth, static = toss_demo(rng) if kind is None else place_demo(rng, kind)
             track = render_track(truth, camera, rng, static, size_error=rng.uniform(0.85, 1.2))
-            demo = reconstruct_skill(track, camera, truth.skill, cup_height=CUP_H, cup_radius=CUP_R,
-                                     ball_radius=BALL_R)
+            demo = reconstruct_skill(track, camera, truth.skill, PROPS)
             demo.info["synthetic"] = 1.0
             out.append((f"{name}_{i:02d}", demo))
     return out
 
 
-def cup_front_px(camera: Camera, base: np.ndarray, radius: float = CUP_R) -> np.ndarray:
-    """Pixel of a cup's table-side rim point nearest the camera (the lowest pixel of its blob)."""
+def cup_front_px(camera: Camera, base: np.ndarray, mouth_up: bool, props: Props = PROPS) -> np.ndarray:
+    """Lowest pixel of a cup standing with its table-side rim centred at `base`: the red wall's point nearest the
+    camera (above the white lip for a mouth-down cup)."""
+    z = 0.0 if mouth_up else props.lip
     view = base - camera.center_table
     view[2] = 0
-    return camera.project(base - radius * view / np.linalg.norm(view))[0]
+    return camera.project(base + [0, 0, z] - props.radius_at(z, mouth_up) * view / np.linalg.norm(view))[0]
+
+
+def rim_px(camera: Camera, mouth: np.ndarray, props: Props = PROPS) -> np.ndarray:
+    """Centre of a mouth-up cup's widest red row: its mouth centre, just under the lip."""
+    return camera.project(mouth - [0, 0, props.lip])[0]
 
 
 def object_paths(demo: SkillDemo) -> np.ndarray:
-    """(T, 3) path of the manipulated object: a cup's table-side rim centre, or the ball centre."""
+    """(T, 3) path of the manipulated object: a cup's table-side rim centre, or the cap's centre."""
     T = len(demo.t)
     g = int(np.searchsorted(demo.t, demo.t_grasp)) + 1
     r = int(np.searchsorted(demo.t, demo.t_release))
     path = np.repeat(demo.obj_start[None], T, 0)
     if demo.skill == "toss":
-        held = demo.palm + BALL_DEPTH * demo.palm_rot[:, :, 2]
+        held = demo.palm + demo.palm_rot @ pinch_offset(demo.info["pinch_closure"])
         path[g:r + 1] = held[g:r + 1]
         dt = (demo.t[r:] - demo.t[r])[:, None]
         path[r:] = held[r] + demo.release_vel * dt + 0.5 * np.array([0, 0, -GRAVITY]) * dt ** 2
@@ -213,12 +225,20 @@ def object_paths(demo: SkillDemo) -> np.ndarray:
     return path
 
 
+def cap_hidden(demo: SkillDemo, path: np.ndarray) -> np.ndarray:
+    """Frames where the thrown cap is inside the top cup (out of sight)."""
+    r = int(np.searchsorted(demo.t, demo.t_release))
+    hidden = np.zeros(len(path), bool)
+    inside = (path[:, 2] < demo.obj_end[2] - 0.005) & (np.linalg.norm(path[:, :2] - demo.obj_end[:2], axis=1)
+                                                         < PROPS.mouth_radius)
+    hidden[r:] = np.maximum.accumulate(inside[r:])
+    return hidden
+
+
 def render_track(demo: SkillDemo, camera: Camera, rng: np.random.Generator, static_cups=(),
                  size_error: float = 1.0, pixel_noise: float = 1.0) -> SkillTrack:
-    """What the trackers would see: hand landmarks (MediaPipe-like, wrong hand size) and object blobs.
-
-    Columns of objects_px: the manipulated object, then `static_cups`. For the toss the top cup (the last
-    column) is added from the demo's mouth."""
+    """What the trackers would see: hand landmarks (MediaPipe-like, wrong hand size), the moved cup's lowest
+    pixel or the cap, and the marks in the still frames (see SkillTrack)."""
     T = len(demo.t)
     hand_px, hand_world = np.zeros((T, 21, 2)), np.zeros((T, 21, 3))
     for i in range(T):
@@ -231,23 +251,26 @@ def render_track(demo: SkillDemo, camera: Camera, rng: np.random.Generator, stat
     hand_px[8:10] = np.nan  # a couple of dropped detections
 
     path = object_paths(demo)
+    dist = np.linalg.norm(camera.to_cam(path), axis=1)
+    f = camera.K[0, 0]
+    marks = {}
     if demo.skill == "toss":
-        static_cups = [*static_cups, demo.obj_end - [0, 0, CUP_H]]
-    cols, radii = [], []
-    if demo.skill == "toss":
-        cols.append(camera.project(path))
-        pc = camera.to_cam(path)
-        dist = np.linalg.norm(pc, axis=1)
-        cos = pc[:, 2] / dist  # the ball's image is an ellipse, long semi-axis ~ f R / (d cos^2)
-        radii.append(camera.K[0, 0] * BALL_R / (dist * cos ** 2) + rng.normal(0, 0.3, T))
-        below = path[:, 2] < demo.obj_end[2] - 0.01  # inside the cup: out of sight
-        r = int(np.searchsorted(demo.t, demo.t_release))
-        cols[0][r:][below[r:]] = np.nan
+        obj_px = camera.project(path)
+        obj_px[cap_hidden(demo, path)] = np.nan
+        obj_r = f * PROPS.cap_radius / dist
+        marks["rim"] = rim_px(camera, demo.obj_end)
     else:
-        cols.append(np.array([cup_front_px(camera, p) for p in path]))
-        radii.append(np.full(T, camera.K[0, 0] * CUP_R / np.linalg.norm(camera.to_cam(demo.obj_start[None]))))
-    for base in static_cups:
-        cols.append(np.repeat(cup_front_px(camera, np.asarray(base))[None], T, 0))
-        radii.append(np.full(T, camera.K[0, 0] * CUP_R / np.linalg.norm(camera.to_cam(np.asarray(base)[None]))))
-    objects_px = np.stack(cols, 1) + rng.normal(0, pixel_noise, (T, len(cols), 2))
-    return SkillTrack(demo.t.copy(), hand_px, hand_world, objects_px, np.stack(radii, 1))
+        mouth_up = demo.skill == "place_top"
+        obj_px = np.array([cup_front_px(camera, p, mouth_up) for p in path])
+        obj_r = f * 0.07 / dist  # about the cup's half-diagonal
+        marks["start"] = cup_front_px(camera, demo.obj_start, mouth_up)
+        if mouth_up:
+            marks["rim"] = rim_px(camera, demo.obj_end + [0, 0, H])
+        else:
+            marks["end"] = cup_front_px(camera, demo.obj_end, mouth_up)
+    named = {name: base for name, base, _ in static_cups}
+    if demo.skill != "place_base" and "A" in named and "B" in named:
+        marks["base_a"], marks["base_b"] = (cup_front_px(camera, named[k], False) for k in "AB")
+    marks = {k: v + rng.normal(0, pixel_noise, 2) for k, v in marks.items()}
+    obj_px = obj_px + rng.normal(0, pixel_noise, obj_px.shape)
+    return SkillTrack(demo.t.copy(), hand_px, hand_world, obj_px, obj_r + rng.normal(0, 0.3, T), marks)

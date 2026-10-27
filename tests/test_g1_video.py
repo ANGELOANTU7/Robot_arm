@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import robot_arm.video.skill_process as skill_process
-from robot_arm.humanoid.synthetic import (BALL_R, CUP_H, CUP_R, look_at_camera, object_paths, place_demo,
+from robot_arm.humanoid.synthetic import (H, PROPS, cap_hidden, look_at_camera, object_paths, place_demo,
                                           render_track, side_grasp_rot, toss_demo)
 from robot_arm.video.hand_pose import closure, palm_frame
 from robot_arm.video.skills import GRAVITY, SkillDemo, reconstruct_skill
@@ -16,7 +16,8 @@ from test_video import render_sheet
 
 
 def skill_camera():
-    """Further back than the pinch clips' camera: the whole reach, the wind-up and the ball's flight are in view."""
+    """Further back than the pinch clips' camera: the supply cups, the pyramid, the reach above them and the
+    cap's flight are in view."""
     return look_at_camera()
 
 
@@ -50,8 +51,7 @@ def test_reconstruct_place(kind, size_error):
     rng = np.random.default_rng(1)
     cam = skill_camera()
     truth, static = place_demo(rng, kind)
-    demo = reconstruct_skill(render_track(truth, cam, rng, static, size_error=size_error), cam, truth.skill,
-                             cup_height=CUP_H, cup_radius=CUP_R)
+    demo = reconstruct_skill(render_track(truth, cam, rng, static, size_error=size_error), cam, truth.skill, PROPS)
     assert demo.skill == truth.skill
     np.testing.assert_allclose(demo.obj_start, truth.obj_start, atol=0.008)
     np.testing.assert_allclose(demo.obj_end, truth.obj_end, atol=0.008)
@@ -62,78 +62,95 @@ def test_reconstruct_place(kind, size_error):
     assert np.median([angle_deg(a, b) for a, b in zip(demo.palm_rot, truth.palm_rot)]) < 10
 
 
-@pytest.mark.parametrize("seed,size_error", [(0, 0.85), (1, 1.0), (2, 1.2)])
+@pytest.mark.parametrize("seed,size_error", [(0, 0.85), (1, 1.0), (2, 1.2), (3, 1.0)])
 def test_reconstruct_toss(seed, size_error):
     rng = np.random.default_rng(seed)
     cam = skill_camera()
-    truth = toss_demo(rng)
-    demo = reconstruct_skill(render_track(truth, cam, rng, size_error=size_error), cam, "toss",
-                             cup_height=CUP_H, cup_radius=CUP_R, ball_radius=BALL_R)
+    truth, static = toss_demo(rng)
+    demo = reconstruct_skill(render_track(truth, cam, rng, static, size_error=size_error), cam, "toss", PROPS)
     np.testing.assert_allclose(demo.obj_start, truth.obj_start, atol=0.008)
     np.testing.assert_allclose(demo.obj_end, truth.obj_end, atol=0.008)
     assert abs(demo.info["scale"] - size_error) < 0.04
     assert abs(demo.t_grasp - truth.t_grasp) < 0.25 and abs(demo.t_release - truth.t_release) < 0.06
     assert np.median(np.linalg.norm(demo.palm - truth.palm, axis=1)) < 0.015
+    # The base cups' line (its sign is arbitrary).
+    assert abs(np.dot(demo.base_axis, truth.base_axis)) > 0.99
     # The fitted flight matches the true one (compared at the true release time).
     g = np.array([0, 0, -GRAVITY])
     dt = truth.t_release - demo.t_release
     np.testing.assert_allclose(demo.release_pos + demo.release_vel * dt + 0.5 * g * dt ** 2, truth.release_pos,
-                               atol=0.015)
-    np.testing.assert_allclose(demo.release_vel + g * dt, truth.release_vel, atol=0.2)
+                               atol=0.02)
+    np.testing.assert_allclose(demo.release_vel + g * dt, truth.release_vel, atol=0.15)
 
 
 def test_skill_demo_roundtrip(tmp_path):
-    demo = toss_demo(np.random.default_rng(0))
+    demo, _ = toss_demo(np.random.default_rng(0))
     demo.save(tmp_path / "d.npz")
     back = SkillDemo.load(tmp_path / "d.npz")
     assert back.skill == "toss" and back.info == demo.info
     np.testing.assert_allclose(back.palm_rot, demo.palm_rot)
     np.testing.assert_allclose(back.release_pos, demo.release_pos)
+    np.testing.assert_allclose(back.base_axis, demo.base_axis)
 
 
-CUP_BGR = {"blue": (200, 80, 20), "green": (40, 180, 40), "yellow": (0, 220, 240)}
+RED, WHITE, BLUE = (40, 25, 200), (235, 235, 235), (200, 80, 20)  # BGR
 
 
-def _cup_hull(cam, base):
+def _ring(base, z, r):
     a = np.linspace(0, 2 * np.pi, 48, endpoint=False)
-    ring = np.stack([np.cos(a), np.sin(a), np.zeros_like(a)], 1) * CUP_R
-    pts = np.concatenate([base + ring, base + ring + [0, 0, CUP_H]])
-    return cv2.convexHull(cam.project(pts).astype(np.int32))
+    return np.asarray(base) + np.stack([r * np.cos(a), r * np.sin(a), np.full_like(a, z)], 1)
 
 
-def render_skill_clip(truth: SkillDemo, cam, cups: dict, moved: str | None):
-    """Frames of a clip: the sheet, solid colored cups (`moved` follows the demo) and the orange ball."""
+def _fill(img, cam, pts, color):
+    cv2.fillConvexPoly(img, cv2.convexHull(cam.project(pts).astype(np.int32)), color)
+
+
+def draw_cup(img, cam, base, mouth_up):
+    """A red party cup standing with its table-side rim centred at `base`: white rolled lip at the mouth, white
+    inside."""
+    r, lip = PROPS.radius_at, PROPS.lip
+    if mouth_up:
+        _fill(img, cam, np.concatenate([_ring(base, 0, r(0, True)), _ring(base, H - lip, r(H - lip, True))]), RED)
+        _fill(img, cam, _ring(base, H, PROPS.mouth_radius), WHITE)
+    else:
+        _fill(img, cam, np.concatenate([_ring(base, 0, PROPS.mouth_radius), _ring(base, lip, r(lip, False))]), WHITE)
+        _fill(img, cam, np.concatenate([_ring(base, lip, r(lip, False)), _ring(base, H, r(H, False))]), RED)
+
+
+def render_skill_clip(truth: SkillDemo, cam, static):
+    """Frames of a clip: the sheet, the static cups, the moved cup following the demo, and the blue cap."""
     background = render_sheet(cam)
     path = object_paths(truth)
-    r_idx = int(np.searchsorted(truth.t, truth.t_release))
+    hidden = cap_hidden(truth, path) if truth.skill == "toss" else None
+    cups = [(base, up) for _, base, up in static]
+    if truth.skill == "toss":
+        cups.append((truth.obj_end - [0, 0, H], True))
     frames = []
     for i in range(len(truth.t)):
         img = background.copy()
-        for color, base in cups.items():
-            cv2.fillConvexPoly(img, _cup_hull(cam, path[i] if color == moved else base), CUP_BGR[color])
-        if truth.skill == "toss" and not (i > r_idx and path[i, 2] < truth.obj_end[2] - 0.01):
-            pc = cam.to_cam(path[i][None])[0]
-            d = np.linalg.norm(pc)
-            r = cam.K[0, 0] * BALL_R / (d * (pc[2] / d) ** 2)
-            cv2.circle(img, tuple(cam.project(path[i])[0].astype(int)), int(round(r)), (0, 120, 255), -1)
+        scene = cups if truth.skill == "toss" else cups + [(path[i], truth.skill == "place_top")]
+        # Far cups first, cups higher up (the top cup) over the ones below.
+        for base, up in sorted(scene, key=lambda c: (c[0][2], -np.linalg.norm(c[0][:2] - cam.center_table[:2]))):
+            draw_cup(img, cam, base, up)
+        if truth.skill == "toss" and not hidden[i]:
+            c = path[i] - [0, 0, PROPS.cap_height / 2]
+            _fill(img, cam, np.concatenate([_ring(c, 0, PROPS.cap_radius), _ring(c, PROPS.cap_height,
+                                                                                  PROPS.cap_radius)]), BLUE)
         frames.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     return frames
 
 
-@pytest.mark.parametrize("skill", ["place_base", "toss"])
-def test_process_skill_video_end_to_end(tmp_path, monkeypatch, skill):
+@pytest.mark.parametrize("skill,kind", [("place_base", "A"), ("place_base", "B"), ("place_top", "top"),
+                                        ("toss", None)])
+def test_process_skill_video_end_to_end(tmp_path, monkeypatch, skill, kind):
     rng = np.random.default_rng(4)
     cam = skill_camera()
     if skill == "toss":
-        truth, fps = toss_demo(rng), 60
-        top = truth.obj_end - [0, 0, CUP_H]
-        u = np.array([np.cos(-2.4), np.sin(-2.4), 0.0]) * (CUP_R + 0.004)
-        cups, moved = {"blue": top - u - [0, 0, CUP_H], "green": top + u - [0, 0, CUP_H], "yellow": top}, None
+        (truth, static), fps = toss_demo(rng), 60
     else:
-        (truth, static), fps = place_demo(rng, "A"), 30
-        cups, moved = {"blue": truth.obj_start, "green": static[0]}, "blue"
+        (truth, static), fps = place_demo(rng, kind), 30
     video = tmp_path / f"{skill}_01.mp4"
-    imageio.mimsave(video, render_skill_clip(truth, cam, cups, moved), fps=fps, macro_block_size=1, quality=9)
+    imageio.mimsave(video, render_skill_clip(truth, cam, static), fps=fps, macro_block_size=1, quality=9)
 
     class FakeTracker:
         def __init__(self, *a, **k):
@@ -149,15 +166,16 @@ def test_process_skill_video_end_to_end(tmp_path, monkeypatch, skill):
             pass
 
     monkeypatch.setattr(skill_process, "HandTracker", FakeTracker)
-    demo, calib = skill_process.process_skill_video(video, tmp_path / "out", focal_px=cam.K[0, 0],
-                                                    cup_height=CUP_H, cup_radius=CUP_R, ball_radius=BALL_R)
+    demo, calib = skill_process.process_skill_video(video, tmp_path / "out", focal_px=cam.K[0, 0], props=PROPS)
     assert calib["markers_found"] == 4 and demo.skill == skill
     np.testing.assert_allclose(demo.obj_start, truth.obj_start, atol=0.015)
     np.testing.assert_allclose(demo.obj_end, truth.obj_end, atol=0.015)
     assert abs(demo.info["scale"] - 1.1) < 0.06
     assert abs(demo.t_grasp - truth.t_grasp) < 0.3 and abs(demo.t_release - truth.t_release) < 0.3
     if skill == "toss":
-        assert np.linalg.norm(demo.release_vel - truth.release_vel) < 0.35
+        assert abs(np.dot(demo.base_axis, truth.base_axis)) > 0.98
+        g = np.array([0, 0, -GRAVITY])
+        assert np.linalg.norm(demo.release_vel + g * (truth.t_release - demo.t_release) - truth.release_vel) < 0.25
     loaded = SkillDemo.load(tmp_path / "out" / f"{skill}_01.npz")
     np.testing.assert_allclose(loaded.palm, demo.palm)
     assert (tmp_path / "out" / f"{skill}_01_overlay.mp4").exists()

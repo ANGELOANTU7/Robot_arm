@@ -33,13 +33,27 @@ def test_place_plan_constraints():
 
 
 def test_throw_style_matches_the_throw():
-    demo = toss_demo(np.random.default_rng(1))
-    style = throw_style(demo)
-    # The synthetic person releases 25-30 cm from the cup, 6-12 cm (+ the ball on the palm) above the mouth,
-    # from their right side, with a 0.28-0.36 s flight.
-    assert 0.24 < style["release_dist"] < 0.31 and 0.08 < style["release_height"] < 0.15
-    assert -2.1 < style["release_bearing"] < -1.5 and 0.27 < style["flight_time"] < 0.37
-    params = toss_params(style)
+    from robot_arm.humanoid.synthetic import PROPS, look_at_camera, render_track
+    from robot_arm.video.skills import reconstruct_skill
+
+    rng = np.random.default_rng(1)
+    truth, scene = toss_demo(rng)
+    # The synthetic person releases 5-30 cm from the mouth along the base cups (within 0.25 rad), 4-12 cm above
+    # it, with a 0.22-0.34 s flight: the truth's style is exact.
+    style = throw_style(truth)
+    d = truth.release_pos - truth.obj_end
+    assert np.isclose(style["release_dist"], np.linalg.norm(d[:2])) and np.isclose(style["release_height"], d[2])
+    assert 0.05 <= style["release_dist"] <= 0.30 and abs(style["release_bearing"]) <= 0.25
+    assert 0.22 <= style["flight_time"] <= 0.34
+    # Measured through the video pipeline it is close (a release found a frame early or late is a point a couple
+    # of centimetres away on the same arc).
+    cam = look_at_camera()
+    demo = reconstruct_skill(render_track(truth, cam, rng, scene), cam, "toss", PROPS)
+    measured = throw_style(demo)
+    for k, tol in (("release_dist", 0.02), ("release_height", 0.02), ("release_bearing", 0.1),
+                   ("flight_time", 0.03), ("windup", 0.02)):
+        assert abs(measured[k] - style[k]) < tol, (k, measured[k], style[k])
+    params = toss_params(measured)
     for k, (lo, hi) in TOSS_BOUNDS.items():
         assert lo <= params[k] <= hi
 

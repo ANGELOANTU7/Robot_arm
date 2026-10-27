@@ -1,9 +1,15 @@
 """Per-skill clips of the cup-pyramid task -> metric human demonstrations in the table frame.
 
 Clip types (see docs/RECORDING_PYRAMID.md):
-- "place_base": move one mouth-down cup from the supply area onto the table next to (or as) the first base cup;
+- "place_base": move one mouth-down cup from the supply area onto its pyramid spot (cup A alone, cup B next to A);
 - "place_top": put the mouth-up cup onto the two base cups;
-- "toss": pick up the ball and toss it into the top cup.
+- "toss": pick the bottle cap off the table and throw it sideways (along the base cups) into the top cup.
+
+All cups have the same color, so a cup is located from the pixels that change when it moves, and from the shape
+of the red blobs in the still frames at the start and end of a clip (see skill_process.track_skill):
+- a cup's lowest pixel is the point of its table-side rim nearest the camera (for a mouth-down cup, just above the
+  white rolled lip);
+- a mouth-up cup's red wall is widest just under its white lip, level with the centre of its mouth.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -12,21 +18,48 @@ from pathlib import Path
 import numpy as np
 
 from robot_arm.video.calibrate import Camera
-from robot_arm.video.hand_pose import closure, palm_center_cam, palm_frame
+from robot_arm.video.hand_pose import PALM_POINTS, closure, palm_center_cam, palm_frame
 from robot_arm.video.reconstruct import _fill_gaps, _smooth
 
 GRAVITY = 9.81
+PINCH_TIPS = (4, 8)  # thumb tip and index fingertip: the cap is held between them
+
+
+@dataclass(frozen=True)
+class Props:
+    """The person's cups (tapered party cups) and the thrown bottle cap. Metres."""
+
+    cup_height: float = 0.12
+    mouth_radius: float = 0.045
+    bottom_radius: float = 0.025
+    lip: float = 0.005  # the white rolled rim at the mouth: the red wall stops this far from the rim
+    cap_radius: float = 0.014
+    cap_height: float = 0.012
+
+    def radius_at(self, z: float, mouth_up: bool) -> float:
+        """Outer radius of a cup standing on the table, at height z."""
+        s = np.clip(z / self.cup_height, 0, 1)
+        if not mouth_up:
+            s = 1 - s
+        return float(self.bottom_radius + s * (self.mouth_radius - self.bottom_radius))
 
 
 @dataclass
 class SkillTrack:
-    """Per-frame detections for a skill clip. Missing values are NaN."""
+    """Detections for a skill clip. Missing values are NaN.
+
+    obj_px: per frame, the moved cup's lowest pixel (place clips) or the cap's centre (toss).
+    marks: pixel measurements in the still frames (each optional):
+      "start" / "end": the moved cup's lowest pixel at the start / end;
+      "rim": the top cup's mouth (centre of its widest red row) once the pyramid stands;
+      "base_a" / "base_b": the two base cups' lowest pixels."""
 
     t: np.ndarray  # (T,)
     hand_px: np.ndarray  # (T, 21, 2)
     hand_world: np.ndarray  # (T, 21, 3)
-    objects_px: np.ndarray  # (T, N, 2) bottom pixel of each tracked cup (N cups) or ball centre
-    objects_r_px: np.ndarray  # (T, N) blob radius in pixels
+    obj_px: np.ndarray  # (T, 2)
+    obj_r_px: np.ndarray  # (T,) blob radius in pixels
+    marks: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -38,13 +71,13 @@ class SkillDemo:
     palm: np.ndarray  # (T, 3) palm centre
     palm_rot: np.ndarray  # (T, 3, 3) palm frame (x fingers, y thumb side, z out of the palm)
     closure: np.ndarray  # (T,) 0 open .. 1 closed
-    obj_start: np.ndarray  # (3,) object position at the start (cup: centre of its table-side rim; ball: centre)
-    obj_end: np.ndarray  # (3,) where the object ended up (place) / the cup mouth it was thrown into (toss)
+    obj_start: np.ndarray  # (3,) object at the start (cup: centre of its table-side rim; cap: centre)
+    obj_end: np.ndarray  # (3,) where the cup ended up / the centre of the top cup's mouth (toss)
     t_grasp: float
     t_release: float
-    release_vel: np.ndarray = field(default_factory=lambda: np.zeros(3))  # toss: ball velocity after release
-    release_pos: np.ndarray = field(default_factory=lambda: np.zeros(3))  # toss: ball centre at release
-    info: dict = field(default_factory=dict)
+    release_vel: np.ndarray = field(default_factory=lambda: np.zeros(3))  # toss: cap velocity after release
+    release_pos: np.ndarray = field(default_factory=lambda: np.zeros(3))  # toss: cap centre at release
+    info: dict = field(default_factory=dict)  # numbers only; toss: "axis_x", "axis_y" = base cup A -> B
 
     def save(self, path: str | Path) -> None:
         d = asdict(self)
@@ -58,6 +91,11 @@ class SkillDemo:
         return cls(str(z["skill"]), z["t"], z["palm"], z["palm_rot"], z["closure"], z["obj_start"], z["obj_end"],
                    float(z["t_grasp"]), float(z["t_release"]), z["release_vel"], z["release_pos"], info)
 
+    @property
+    def base_axis(self) -> np.ndarray | None:
+        """Toss clips: horizontal unit vector between the base cups, if they were found."""
+        return np.array([self.info["axis_x"], self.info["axis_y"], 0.0]) if "axis_x" in self.info else None
+
 
 def smooth_rotations(R: np.ndarray, fps: float, seconds: float = 0.2) -> np.ndarray:
     """Smooth a rotation sequence by filtering its rotation vectors relative to the first frame."""
@@ -67,20 +105,6 @@ def smooth_rotations(R: np.ndarray, fps: float, seconds: float = 0.2) -> np.ndar
     vec = np.unwrap(rel.as_rotvec(), axis=0)
     vec = _smooth(vec, fps, seconds)
     return R[0] @ Rotation.from_rotvec(vec).as_matrix()
-
-
-def moved_object(objects_px: np.ndarray) -> int:
-    """Index of the tracked object that moved the most (in pixels) between its first and last sighting."""
-    best, idx = -1.0, 0
-    for k in range(objects_px.shape[1]):
-        valid = ~np.isnan(objects_px[:, k, 0])
-        if valid.sum() < 2:
-            continue
-        p = objects_px[valid, k]
-        d = np.linalg.norm(p - p[0], axis=1).max()
-        if d > best:
-            best, idx = d, k
-    return idx
 
 
 def _motion_window(px: np.ndarray, r_px: float, fps: float) -> tuple[int, int]:
@@ -98,6 +122,48 @@ def _motion_window(px: np.ndarray, r_px: float, fps: float) -> tuple[int, int]:
     return first, max(first, min(settle, len(px) - 1))
 
 
+def cup_base_from_px(bottom_px, camera: Camera, z: float, radius: float) -> np.ndarray:
+    """Centre of a cup's circle at height z from the image of its point nearest the camera (the lowest pixel of
+    the cup's blob)."""
+    front = camera.backproject_to_plane(bottom_px, z=z)
+    view = front - camera.center_table
+    view[2] = 0
+    return front + radius * view / np.linalg.norm(view)
+
+
+def cup_on_table(bottom_px, camera: Camera, props: Props, mouth_up: bool) -> np.ndarray:
+    """Centre of the table-side rim of a cup standing on the table, from its lowest red pixel. A mouth-down cup's
+    red wall starts above its white lip."""
+    z = 0.0 if mouth_up else props.lip
+    p = cup_base_from_px(bottom_px, camera, z, props.radius_at(z, mouth_up))
+    p[2] = 0.0
+    return p
+
+
+def top_cup_mouth(rim_px, camera: Camera, props: Props, base_mid: np.ndarray | None = None) -> np.ndarray:
+    """Centre of the top cup's mouth from the centre of its widest red row (just under the lip).
+
+    With the base cups' midpoint known, the mouth is taken at the same distance from the camera (the top cup
+    sits centred on them, give or take a centimetre), which also gives its height: the top cup wedges between
+    the base cups' walls by an amount we don't know in advance. Otherwise it is assumed to sit on top of them."""
+    if base_mid is None:
+        p = camera.backproject_to_plane(rim_px, z=2 * props.cup_height - props.lip)
+    else:
+        o, d = camera.center_table, camera.ray(rim_px)
+        fwd = np.array([d[0], d[1], 0.0]) / np.linalg.norm(d[:2])
+        p = o + d * (np.dot(base_mid - o, fwd) / np.dot(d, fwd))
+        p[2] = np.clip(p[2], 1.6 * props.cup_height, 2.05 * props.cup_height)
+    return p + [0, 0, props.lip]
+
+
+def base_pair(marks: dict, camera: Camera, props: Props) -> tuple[np.ndarray, np.ndarray] | None:
+    """Table-side rim centres of the base cups A and B (mouth down), if both were seen."""
+    if "base_a" not in marks or "base_b" not in marks:
+        return None
+    return (cup_on_table(marks["base_a"], camera, props, mouth_up=False),
+            cup_on_table(marks["base_b"], camera, props, mouth_up=False))
+
+
 def _fit_ballistic(t: np.ndarray, p: np.ndarray, t0: float) -> tuple[np.ndarray, np.ndarray]:
     """Least-squares p(t) = p0 + v (t - t0) + g/2 (t - t0)^2 with known gravity: returns p0, v."""
     dt = t - t0
@@ -107,16 +173,36 @@ def _fit_ballistic(t: np.ndarray, p: np.ndarray, t0: float) -> tuple[np.ndarray,
     return sol[0], sol[1]
 
 
-def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, cup_height: float = 0.075,
-                      cup_radius: float = 0.031, ball_radius: float = 0.02, palm_offset: float = 0.05,
-                      grasp_frac: float = 0.6, ball_rest_height: float | None = None,
-                      object_index: int | None = None) -> SkillDemo:
+def fit_flight_2d(t: np.ndarray, px: np.ndarray, camera: Camera, t0: float, p_init: np.ndarray,
+                  v_init: np.ndarray, prior_px: float = 0.1) -> tuple[np.ndarray, np.ndarray]:
+    """Ballistic flight p(t) = p0 + v (t - t0) + g/2 (t - t0)^2 fitted to its image positions.
+
+    The cap tumbles, so its size in the image says little about its depth. Its pixel path does: gravity is known,
+    so the path's curvature in the image fixes the distance. A weak pull towards `p_init` (in pixels per
+    centimetre of deviation, scaled by `prior_px`) keeps a short flight from wandering along the view ray."""
+    from scipy.optimize import least_squares
+
+    g = np.array([0, 0, -GRAVITY])
+    dt = (t - t0)[:, None]
+    depth = float(np.linalg.norm(camera.to_cam(p_init[None])[0]))
+    w = prior_px * camera.K[0, 0] / depth  # pixels per metre at that distance, scaled
+
+    def residuals(x):
+        p = x[:3] + x[3:] * dt + 0.5 * g * dt ** 2
+        return np.concatenate([(camera.project(p) - px).ravel(), w * (x[:3] - p_init)])
+
+    sol = least_squares(residuals, np.concatenate([p_init, v_init]), x_scale=[0.05] * 3 + [0.5] * 3)
+    return sol.x[:3], sol.x[3:]
+
+
+def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Props = Props(),
+                      palm_offset: float = 0.05, grasp_frac: float = 0.5) -> SkillDemo:
     """Turn detections of one skill clip into a SkillDemo.
 
     The depth scale (MediaPipe's hand-size guess) is fixed with the grasp anchor: while the hand closes on the
-    object, the object is in front of the palm. For a cup the palm centre is `palm_offset` from its axis along
-    the palm normal (side grasp); for the ball the palm is `ball_radius + 8 mm` from its centre. The ball starts
-    at rest with its centre `ball_rest_height` above the table (default: lying on the table).
+    object, the object is in the hand. For a cup the palm centre is `palm_offset` from its axis along the palm
+    normal (side grasp, about `grasp_frac` up the cup); for the cap, the point between the thumb tip and the
+    index fingertip is at its centre. The cap starts lying flat on the table.
     """
     T = len(track.t)
     fps = 1 / np.median(np.diff(track.t))
@@ -127,12 +213,11 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, cup_height:
     hand_world = _fill_gaps(track.hand_world, ok)
     toss = skill == "toss"
 
-    k = moved_object(track.objects_px) if object_index is None else object_index
-    obj_seen = ~np.isnan(track.objects_px[:, k, 0])
+    obj_seen = ~np.isnan(track.obj_px[:, 0])
     if obj_seen.sum() < 2:
         raise RuntimeError("The manipulated object was not found; check the color setting.")
-    obj_px = _fill_gaps(track.objects_px[:, k], obj_seen)
-    obj_r = float(np.nanmedian(track.objects_r_px[:, k]))
+    obj_px = _fill_gaps(track.obj_px, obj_seen)
+    obj_r = float(np.nanmedian(track.obj_r_px))
 
     # Palm path in the camera frame (up to MediaPipe's depth scale), orientation and closure.
     palm_cam = np.array([palm_center_cam(hand_px[i], hand_world[i], camera.K) for i in range(T)])
@@ -151,45 +236,59 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, cup_height:
     mid = (lo + hi) / 2
     before = np.nonzero(clos[:first_move + 1] < mid)[0]
     grasp = min(int(before[-1]) + 1 if len(before) else first_move, first_move)
+    hold = slice(grasp, max(grasp, first_move) + 1)
+    info = {"fps": fps}
 
+    pair = base_pair(track.marks, camera, props)
+    base_mid = None if pair is None else (pair[0] + pair[1]) / 2
     if toss:
-        # The ball starts at rest at a known height (on the table: its radius): back-project onto that plane.
-        # That also calibrates the apparent radius (blob edges add a roughly constant few tenths of a pixel),
-        # which gives the ball's depth in flight.
+        # The cap lies flat on the table at the start: back-project its centre onto that plane.
         rest = obj_seen.copy()
         rest[max(1, grasp - int(0.3 * fps)):] = False
         rest = rest if rest.any() else obj_seen
-        obj_start = camera.backproject_to_plane(np.nanmedian(track.objects_px[rest, k], axis=0),
-                                                z=ball_radius if ball_rest_height is None else ball_rest_height)
-        pc = camera.to_cam(obj_start[None])[0]
-        dist = np.linalg.norm(pc)
-        r_bias = float(np.nanmedian(track.objects_r_px[rest, k]) - camera.K[0, 0] * ball_radius * dist / pc[2] ** 2)
-        ball_tab = camera.to_table(ball_positions(track.objects_px[:, k], track.objects_r_px[:, k] - r_bias, camera,
-                                                  ball_radius))
-        obj_end = mouth_from_top_cup(track, camera, cup_height, cup_radius, until=max(grasp, 1))
-        anchor, offset = obj_start, ball_radius + 0.008
+        obj_start = camera.backproject_to_plane(np.nanmedian(track.obj_px[rest], axis=0), z=props.cap_height / 2)
+        if "rim" not in track.marks:
+            raise RuntimeError("The top cup was not found; check the cup color and that the pyramid is in view.")
+        obj_end = top_cup_mouth(track.marks["rim"], camera, props, base_mid)
+        if pair is not None:
+            axis = pair[1] - pair[0]
+            info["axis_x"], info["axis_y"] = (axis[:2] / np.linalg.norm(axis[:2])).tolist()
+        # The cap is held between the thumb tip and the index fingertip: that point relative to the palm centre
+        # (MediaPipe's world landmarks are camera-aligned), so it shares the palm's smoothing and depth scale.
+        tips = hand_world[:, list(PINCH_TIPS)].mean(axis=1) - hand_world[:, PALM_POINTS].mean(axis=1)
+        pinch_cam = palm_cam + _smooth(tips, fps, 0.05)
+        point_cam, anchor, offset, weight = pinch_cam[hold].mean(axis=0), obj_start, 0.0, np.ones(3)
+        normal = np.zeros(3)
     else:
-        # Cups: the moved cup's table-side rim centre at the start and at the end.
-        obj_start = cup_base_from_px(obj_px[0], camera, 0.0, cup_radius)
-        obj_end = cup_base_from_px(obj_px[-1], camera, cup_height if skill == "place_top" else 0.0, cup_radius)
-        anchor, offset = obj_start + [0, 0, grasp_frac * cup_height], palm_offset
+        mouth_up = skill == "place_top"
+        if "start" not in track.marks:
+            raise RuntimeError("Could not tell where the moved cup started; keep your hand out of view at first.")
+        obj_start = cup_on_table(track.marks["start"], camera, props, mouth_up)
+        if skill == "place_top" and "rim" in track.marks:
+            obj_end = top_cup_mouth(track.marks["rim"], camera, props, base_mid) - [0, 0, props.cup_height]
+        elif "end" in track.marks:
+            obj_end = cup_on_table(track.marks["end"], camera, props, mouth_up)
+        else:
+            raise RuntimeError("Could not tell where the moved cup ended; pull your hand out of view at the end.")
+        point_cam, anchor, offset = palm_cam[hold].mean(axis=0), obj_start + [0, 0, grasp_frac * props.cup_height], \
+            palm_offset
+        normal = rot_table[hold, :, 2].mean(axis=0)
+        weight = np.array([1.0, 1.0, 0.1])  # a cup can be held at any height
 
-    # Depth scale: the palm centre plus `offset` along the palm normal hits the anchor during the grasp.
-    hold = slice(grasp, max(grasp, first_move) + 1)
-    p_cam, normal = palm_cam[hold].mean(axis=0), rot_table[hold, :, 2].mean(axis=0)
-    weight = np.array([1.0, 1.0, 1.0 if toss else 0.1])  # a cup can be held at any height
+    # Depth scale: the hand's grasp point lands on the anchor during the grasp.
     scales = np.linspace(0.5, 2.0, 301)
-    pts = camera.to_table(scales[:, None] * p_cam) + offset * normal
+    pts = camera.to_table(scales[:, None] * point_cam) + offset * normal
     err = (((pts - anchor) ** 2) * weight).sum(axis=1)
     scale = float(scales[np.argmin(err)])
     palm = camera.to_table(scale * palm_cam)
-    info = {"scale": scale, "fps": fps, "grasp_anchor_err": float(np.sqrt(err.min())), "object_index": float(k)}
+    info.update({"scale": scale, "grasp_anchor_err": float(np.sqrt(err.min()))})
 
     release_vel, release_pos = np.zeros(3), np.zeros(3)
     if toss:
-        release, release_vel, release_pos = _toss_release(track, camera, k, ball_tab, hand_px, obj_r, first_move, fps)
-        info["ball_radius_bias_px"] = r_bias
-        info["release_fit_points"] = float(np.isfinite(ball_tab[release:release + int(0.25 * fps), 0]).sum())
+        pinch = camera.to_table(scale * pinch_cam)
+        release, release_vel, release_pos, n_fit = _toss_release(track, camera, pinch, hand_px, obj_r, first_move,
+                                                                 obj_end, fps)
+        info["release_fit_points"] = float(n_fit)
     else:
         # Release: the hand opens after the cup has come to rest at its new place.
         after = np.nonzero(clos[settle:] < mid)[0]
@@ -199,18 +298,19 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, cup_height:
                      release_vel, release_pos, info)
 
 
-def _toss_release(track: SkillTrack, camera: Camera, k: int, ball_tab: np.ndarray, hand_px: np.ndarray,
-                  r_px: float, first_move: int, fps: float) -> tuple[int, np.ndarray, np.ndarray]:
-    """Release frame, ball velocity and position at release.
+def _toss_release(track: SkillTrack, camera: Camera, pinch: np.ndarray, hand_px: np.ndarray, r_px: float,
+                  first_move: int, mouth: np.ndarray, fps: float) -> tuple[int, np.ndarray, np.ndarray, int]:
+    """Release frame, cap velocity and position at release, and the number of flight frames used.
 
-    The ball clearly leaves the hand a few frames after the release; the ballistic fit of its flight from there
-    is then followed back in the image to the last frame where the ball still lay on that parabola."""
+    The cap clearly leaves the fingertips a few frames after the release. Its flight from there is fitted in the
+    image (gravity known) and followed back to the earliest frame where the cap still lay on that parabola: the
+    release."""
     t = track.t
-    ball_px = track.objects_px[:, k]
-    palm_px = hand_px[:, [0, 5, 9, 13, 17]].mean(axis=1)
+    cap_px = track.obj_px
+    tips_px = hand_px[:, list(PINCH_TIPS)].mean(axis=1)
     with np.errstate(invalid="ignore"):
-        sep = np.linalg.norm(ball_px - palm_px, axis=1)
-    speed = np.linalg.norm(np.gradient(palm_px, axis=0), axis=1)
+        sep = np.linalg.norm(cap_px - tips_px, axis=1)
+    speed = np.linalg.norm(np.gradient(tips_px, axis=0), axis=1)
     peak = first_move + int(np.argmax(speed[first_move:]))
     baseline = np.nanmedian(sep[first_move:peak + 1])
     with np.errstate(invalid="ignore"):
@@ -218,56 +318,35 @@ def _toss_release(track: SkillTrack, camera: Camera, k: int, ball_tab: np.ndarra
     run = 3
     cand = [i for i in range(first_move, len(t) - run) if apart[i:i + run].all()]
     if not cand:
-        raise RuntimeError("Could not see the ball leave the hand.")
+        raise RuntimeError("Could not see the cap leave the hand.")
     sep_idx = cand[0]
-    flight = np.arange(sep_idx, min(len(t), sep_idx + int(0.25 * fps)))
-    flight = flight[np.isfinite(ball_tab[flight, 0])]
-    if len(flight) < 3:
-        raise RuntimeError("Too few frames of the ball in flight; record at 60 fps and keep the ball in view.")
-    p0, v0 = _fit_ballistic(t[flight], ball_tab[flight], t[sep_idx])
-
-    def on_parabola(i):
-        dt = t[i] - t[sep_idx]
-        p = p0 + v0 * dt + 0.5 * np.array([0, 0, -GRAVITY]) * dt ** 2
-        return np.linalg.norm(camera.project(p)[0] - ball_px[i]) < max(0.35 * r_px, 4.0)
-
-    release = sep_idx
-    while release - 1 > first_move and t[sep_idx] - t[release - 1] < 0.15 and on_parabola(release - 1):
-        release -= 1
-    dt = t[release] - t[sep_idx]
+    flight = np.arange(sep_idx, min(len(t), sep_idx + int(0.4 * fps)))
+    seen = np.isfinite(cap_px[flight, 0])
+    if not seen.all():  # stop where the cap is lost (inside the cup, or out of view)
+        flight = flight[: int(np.argmin(seen))]
+    if len(flight) < 4:
+        raise RuntimeError("Too few frames of the cap in flight; record at 60 fps and keep the throw in view.")
     g = np.array([0, 0, -GRAVITY])
-    return release, v0 + g * dt, p0 + v0 * dt + 0.5 * g * dt ** 2
+    tf = max(t[flight[-1]] - t[sep_idx] + 1 / fps, 0.05)
 
+    def fit(i0, frames, prior_px):
+        """Flight with its reference time at frame i0, pulled towards the pinch point there."""
+        v_init = (mouth - pinch[i0] + np.array([0, 0, 0.5 * GRAVITY * tf * tf])) / tf
+        return fit_flight_2d(t[frames], cap_px[frames], camera, t[i0], pinch[i0], v_init, prior_px)
 
-def cup_base_from_px(bottom_px, camera: Camera, z: float, cup_radius: float) -> np.ndarray:
-    """Centre of a cup's table-side rim from the lowest pixel of its blob (the rim edge nearest the camera)."""
-    front = camera.backproject_to_plane(bottom_px, z=z)
-    view = front - camera.center_table
-    view[2] = 0
-    return front + cup_radius * view / np.linalg.norm(view)
+    def on_parabola(i, i0, p0, v0):
+        dt = t[i] - t[i0]
+        p = p0 + v0 * dt + 0.5 * g * dt ** 2
+        return np.linalg.norm(camera.project(p)[0] - cap_px[i]) < max(0.35 * r_px, 3.0)
 
-
-def ball_positions(px: np.ndarray, r_px: np.ndarray, camera: Camera, radius: float) -> np.ndarray:
-    """Metric ball centres in the camera frame from pixel position and apparent radius.
-
-    A sphere at distance d seen at angle theta off the optical axis projects to an ellipse whose long semi-axis
-    (what the enclosing circle measures) is about f R / (d cos^2 theta)."""
-    f = camera.K[0, 0]
-    rays = np.linalg.solve(camera.K, np.column_stack([px, np.ones(len(px))]).T).T
-    rays /= np.linalg.norm(rays, axis=1, keepdims=True)
-    d = f * radius / (r_px * rays[:, 2] ** 2)
-    return rays * d[:, None]
-
-
-def mouth_from_top_cup(track: SkillTrack, camera: Camera, cup_height: float, cup_radius: float,
-                       until: int | None = None) -> np.ndarray:
-    """The top cup is the last tracked object column; its blob bottom sits on the base cups (z = cup height).
-
-    Uses the frames before `until` (before the ball arrives, in case the throw knocks the pyramid over)."""
-    px = track.objects_px[:until, -1]
-    if np.isnan(px[:, 0]).all():
-        px = track.objects_px[:, -1]
-    if np.isnan(px[:, 0]).all():
-        raise RuntimeError("The top cup was not found; check its color setting.")
-    base = cup_base_from_px(np.nanmedian(px, axis=0), camera, cup_height, cup_radius)
-    return base + [0, 0, cup_height]
+    # Once apart, the opening fingers have moved away from the cap, so the first fit is only loosely tied to
+    # them; it finds the release: the earliest frame on the parabola. Until then the cap was in the fingers, so
+    # the refit is tied to the pinch point at the release.
+    p0, v0 = fit(sep_idx, flight, 0.03)
+    release = sep_idx
+    while release - 1 > first_move and t[sep_idx] - t[release - 1] < 0.15 and on_parabola(release - 1, sep_idx,
+                                                                                            p0, v0):
+        release -= 1
+    frames = np.concatenate([np.arange(release, sep_idx)[np.isfinite(cap_px[release:sep_idx, 0])], flight])
+    p0, v0 = fit(release, frames, 0.1)
+    return release, v0, p0, len(frames)
