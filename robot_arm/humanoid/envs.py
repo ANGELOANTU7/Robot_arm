@@ -106,6 +106,14 @@ class G1PyramidEnv(gym.Env):
         self.data.qpos[qadr:qadr + 3] = pos
         self.data.qpos[qadr + 3:qadr + 7] = quat
 
+    def _prebuilt_top(self, off: float) -> np.ndarray:
+        """Top cup position in the V between the base cups, `off` from the centre front to back, as the opening
+        fingers leave a placed top cup. Off-centre, it wedges lower."""
+        u = self.layout.base_b[:2] - self.layout.base_a[:2]
+        u /= np.linalg.norm(u)
+        xy = self.layout.top[:2] + off * np.array([-u[1], u[0]])
+        return np.array([*xy, self.cfg.table_height + wedge_height(self.cfg) - off + 0.002])
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         options = options or {}
@@ -131,8 +139,8 @@ class G1PyramidEnv(gym.Env):
         for k in range(3):
             if k < prebuilt:
                 pos = self.layout.targets()[k] + np.array([*rng.normal(0, 0.002, 2), 0.0])
-                if k == 2:  # set into the V between the base cups, where a placed top cup ends up
-                    pos[2] = T + wedge_height(cfg) + 0.003
+                if k == 2:  # where a top cup the robot placed ends up
+                    pos = self._prebuilt_top(rng.uniform(0.005, 0.015))
             else:
                 z = T + (cfg.cup.height if ORIENTATIONS[k] is DOWN else 0.0)
                 pos = np.array([*supply[k], z])
@@ -146,6 +154,11 @@ class G1PyramidEnv(gym.Env):
         d.ctrl[ids.hand_ctrl] = hand_targets(-1.0)
         mujoco.mj_forward(m, d)
         mujoco.mj_step(m, d, nstep=100)  # let everything settle
+        deep = d.xpos[ids.cup_bodies[2]][2] < cfg.table_height + wedge_height(cfg) - 0.025  # slowly sliding in
+        if prebuilt == 3 and (deep or not top_cup_resting(d, ids.cup_bodies, cfg)):  # set it in centred instead
+            self._set_free(ids.cup_qpos[2], self._prebuilt_top(0.0), UP)
+            d.qvel[ids.cup_dofs[2]:ids.cup_dofs[2] + 6] = 0
+            mujoco.mj_step(m, d, nstep=100)
 
         self.grip = -1.0
         self.hand_state = -1.0

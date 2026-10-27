@@ -201,7 +201,7 @@ class PlaceTracker:
       cup it first slides back along the fingers, as rising would drag the cup by its widening walls).
     """
 
-    FINE_PHASES = ("approach", "close", "lower", "open")
+    FINE_PHASES = ("approach", "close", "lower", "open", "back")
 
     def __init__(self, plan: PlacePlan, cfg: G1TaskConfig = G1_CFG, lag_tol: float = 0.025):
         self.plan, self.cfg, self.lag_tol = plan, cfg, lag_tol
@@ -415,7 +415,8 @@ class G1Retargeter:
     @property
     def fine(self) -> bool:
         if self.stage == 3:
-            return self.toss.phase in ("down", "pinch", "settle", "swing", "release")
+            # Also while the hand leaves the top cup it has just placed: a nudge there knocks it over.
+            return self.toss.phase in ("back", "rise", "down", "pinch", "settle", "swing", "release")
         return self.tracker is not None and self.tracker.fine
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
