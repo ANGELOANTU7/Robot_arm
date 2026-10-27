@@ -47,6 +47,13 @@ def build_spec(cfg: TaskConfig = CFG) -> mujoco.MjSpec:
             g.contype = g.conaffinity = 3
     spec.geom("floor").contype = spec.geom("floor").conaffinity = 3
 
+    # Firmer gripper: Menagerie's finger servo (kp=100) squeezes a 4 cm ball with only ~2 N. kp=300 gives ~6 N,
+    # still far below the real Panda's 70 N, and holds the ball through jerky motions.
+    kp = 300.0
+    finger = spec.actuator("actuator8")
+    finger.gainprm[0] = kp * 0.04 / 255
+    finger.biasprm[1] = -kp
+
     # Tool centre point between the fingertips.
     spec.body("hand").add_site(name="tcp", pos=[0, 0, TCP_OFFSET], size=[0.004, 0, 0],
                                rgba=[1, 0, 0, 0.5], group=4)

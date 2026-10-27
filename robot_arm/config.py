@@ -32,7 +32,7 @@ class TaskConfig:
 
     # TCP height limits (keep the fingers off the table, stay in reach).
     tcp_z_min: float = 0.016
-    tcp_z_max: float = 0.45
+    tcp_z_max: float = 0.55
 
     @property
     def frame_skip(self) -> int:
