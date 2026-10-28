@@ -22,6 +22,7 @@ from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, TOP_TILT_DEG, UP, Py
 from robot_arm.humanoid.scene import G1Ids, build_model
 
 N_STAGES = 4  # place cup0, place cup1, place cup2, toss
+SUCCESS_REWARD = 10.0
 # Observation layout.
 OBS_SITE = slice(27, 30)
 OBS_HAND_ROT = slice(30, 36)
@@ -171,6 +172,7 @@ class G1PyramidEnv(gym.Env):
         self.release_distance = None
         self.events: list[str] = []
         self.fail_reason = None
+        self._phi = self._potential()
         return self._obs(), self._info(False)
 
     # ------------------------------------------------------------------ goals
@@ -240,13 +242,19 @@ class G1PyramidEnv(gym.Env):
 
         self._track_cap()
         success, failed = self._stage_status()
-        reward = self._reward(success)
+        # Potential-based shaping: the step's reward is the change in staged progress, and the progress counts
+        # for nothing once a stage ends (succeeded or failed), so only the success bonus is kept. Rewarding the
+        # progress itself every step paid more for holding a placed cup until the time ran out than for letting go.
+        phi = 0.0 if success or failed else self._potential()
+        reward = (SUCCESS_REWARD if success else 0.0) + phi - self._phi
+        self._phi = phi
         stage_done = success
         terminated = failed
         if success:
             self.events.append(f"stage{self.stage}@{self.steps}")
             if self.task == "full" and self.stage < 3:
                 self.stage += 1
+                self._phi = self._potential()
                 stage_done = False
             else:
                 terminated = True
@@ -316,10 +324,9 @@ class G1PyramidEnv(gym.Env):
         self.fail_reason = reason
         return False, True
 
-    def _reward(self, success: bool) -> float:
-        if success:
-            return 10.0
-        cfg = self.cfg
+    def _potential(self) -> float:
+        """Staged progress in the current stage: reaching, holding the object near its target, placed (or the
+        cap thrown towards the mouth)."""
         to_obj = np.linalg.norm(self.active_grasp_point() - self.site_pos)
         r = 0.2 * (1 - np.tanh(8 * to_obj))
         if self.stage < 3:
