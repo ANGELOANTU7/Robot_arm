@@ -1,0 +1,58 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+WARNING: Logging before InitGoogle() is written to STDERR
+W0000 00:00:1793222124.012651    6640 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+WARNING: Logging before InitGoogle() is written to STDERR
+W0000 00:00:1793222124.035850    6645 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222124.059836    6646 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222124.069383    6640 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222128.504349    6646 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.
+W0000 00:00:1793222128.686914    6640 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.
+('data/processed/hand_cache/part_a_IMG_3753.npz', '0.15 of 711 frames')
+('data/processed/hand_cache/part_a_IMG_3754.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3755.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3756.npz', 'cached')
+W0000 00:00:1793222225.967874    6807 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222225.989481    6806 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_a_IMG_3752.npz', '0.18 of 943 frames')
+('data/processed/hand_cache/part_a_IMG_3758.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3759.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3760.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3761.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3762.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3763.npz', 'cached')
+('data/processed/hand_cache/part_a_IMG_3764.npz', 'cached')
+W0000 00:00:1793222250.706907    6848 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222250.731886    6848 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_a_IMG_3757.npz', '0.63 of 624 frames')
+('data/processed/hand_cache/part_b_IMG_3766.npz', 'cached')
+W0000 00:00:1793222294.426116    6895 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222294.445270    6895 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_b_IMG_3765.npz', '0.84 of 754 frames')
+('data/processed/hand_cache/part_b_IMG_3768.npz', 'cached')
+('data/processed/hand_cache/part_b_IMG_3769.npz', 'cached')
+W0000 00:00:1793222337.347356    6962 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222337.368923    6962 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_b_IMG_3767.npz', '0.39 of 753 frames')
+('data/processed/hand_cache/part_b_IMG_3771.npz', 'cached')
+('data/processed/hand_cache/part_b_IMG_3772.npz', 'cached')
+('data/processed/hand_cache/part_b_IMG_3773.npz', 'cached')
+('data/processed/hand_cache/part_b_IMG_3774.npz', 'cached')
+W0000 00:00:1793222374.024449    6993 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222374.041004    6994 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_b_IMG_3770.npz', '0.71 of 438 frames')
+W0000 00:00:1793222389.717003    7027 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222389.742961    7027 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_c_IMG_3778.npz', '0.46 of 561 frames')
+W0000 00:00:1793222456.292621    7080 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222456.314660    7080 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_c_IMG_3775.npz', '0.55 of 984 frames')
+W0000 00:00:1793222490.426633    7131 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1793222490.483753    7131 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+('data/processed/hand_cache/part_c_IMG_3780.npz', '0.32 of 538 frames')
+('data/processed/hand_cache/part_c_IMG_3781.npz', 'cached')
+('data/processed/hand_cache/part_c_IMG_3782.npz', 'cached')
+('data/processed/hand_cache/part_c_IMG_3783.npz', 'cached')
+('data/processed/hand_cache/part_c_IMG_3784.npz', 'cached')
+('data/processed/hand_cache/part_c_IMG_3785.npz', 'cached')
+('data/processed/hand_cache/part_c_IMG_3779.npz', '0.57 of 933 frames')

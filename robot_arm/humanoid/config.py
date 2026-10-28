@@ -43,6 +43,17 @@ class G1TaskConfig:
     supply_cups: tuple[tuple[float, float], ...] = ((0.33, -0.20), (0.31, -0.37), (0.53, -0.28))  # A, B, top
     cap_spot: tuple[float, float] = (0.28, -0.06)  # the cap lies flat on the table here, near where it is thrown from
     layout_jitter: float = 0.015
+    # Like in your clips, the cups (all mouth-down) and the cap start anywhere within the right hand's reach
+    # (instead of at supply_cups / cap_spot): distance and bearing from the right shoulder, clear of the pyramid
+    # spot and of the path the hand takes to each cup.
+    random_layout: bool = True
+    reach_center: tuple[float, float] = (0.0, -0.10)  # right shoulder, seen from above
+    reach_radius: tuple[float, float] = (0.22, 0.56)
+    reach_bearing: tuple[float, float] = (-1.1, 0.8)
+    grasp_heading: tuple[float, float] = (-0.9, 0.45)  # the hand's heading when reaching for a cup (rad)
+    reach_box: tuple[float, float, float, float] = (0.22, 0.55, -0.37, 0.08)  # x and y limits (on the table)
+    pyramid_clearance: float = 0.16  # cups' centres from the pyramid's centre (the cap: 2 cm less)
+    cup_clearance: float = 0.13  # between cups' centres
     # How precisely the pyramid must be built. As with real party cups, the top cup wedges into the V between
     # the two base cups' slanted walls rather than balancing on their bottoms, so it can sit lower and a little
     # off-centre and still stand (settling tests: up to 2.5 cm off-centre and 4 cm lower, upright). A fallen
@@ -75,8 +86,14 @@ class G1TaskConfig:
     rot_leash: float = 0.3  # same for the hand orientation (rad)
     ik_substeps: int = 5  # IK solves per control step (the command is interpolated between them)
 
+    # After the cap lands in the cup: a thumbs-up (fist, thumb pointing up) held for thumbs_up_hold seconds with the
+    # hand clear of the pyramid. The observation's target is a spot beside the robot's right shoulder.
+    thumbs_up_spot: tuple[float, float, float] = (0.28, -0.24, 0.30)  # z above the table
+    thumbs_up_hold: float = 0.5
+    thumbs_up_min_tilt: float = 0.82  # the thumb's direction must have this upward component (35 degrees)
+
     place_seconds: float = 10.0
-    toss_seconds: float = 8.0
+    toss_seconds: float = 20.0  # the throw, any re-throws after a miss, and the thumbs-up
 
     @property
     def frame_skip(self) -> int:

@@ -117,3 +117,61 @@ def cap_in_cup(data, cap_body: int, cup_body: int, cap_radius: float, cfg: G1Tas
         return False
     radius_here = cup.bottom_radius + (cup.mouth_radius - cup.bottom_radius) * local[2] / cup.height
     return bool(np.hypot(local[0], local[1]) < radius_here)
+
+
+def reach_heading(xy, cfg: G1TaskConfig = G1_CFG) -> float:
+    """Heading of the hand reaching a point on the table: away from the right shoulder, within what the arm
+    reaches comfortably."""
+    d = np.asarray(xy[:2], float) - np.asarray(cfg.reach_center)
+    return float(np.clip(np.arctan2(d[1], d[0]), *cfg.grasp_heading))
+
+
+def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1TaskConfig = G1_CFG, tries: int = 500):
+    """Random start spots for the three cups (picked in order A, B, top) and the cap, all within reach.
+
+    Each cup is approached along its reach heading, sliding in from 16-24 cm behind it, and the fingertips end
+    ~11 cm past its centre: whatever is on the table when it is picked (the later cups, the cap, the base cups
+    already in the pyramid) must be outside that corridor. Returns ([A, B, top] as xy arrays, cap xy)."""
+    lo, hi = cfg.reach_radius
+    b_lo, b_hi = cfg.reach_bearing
+    centre = np.asarray(cfg.reach_center, float)
+    pyr = np.asarray(layout.top[:2], float)
+    bases = [np.asarray(layout.base_a[:2]), np.asarray(layout.base_b[:2])]
+    r_cup = cfg.cup.mouth_radius + cfg.cup.wall
+
+    def spot():
+        for _ in range(100):
+            r, b = np.sqrt(rng.uniform(lo ** 2, hi ** 2)), rng.uniform(b_lo, b_hi)
+            p = centre + r * np.array([np.cos(b), np.sin(b)])
+            x0, x1, y0, y1 = cfg.reach_box
+            if x0 <= p[0] <= x1 and y0 <= p[1] <= y1:
+                return p
+        return p
+
+    def in_corridor(cup, other, r_other):
+        h = reach_heading(cup, cfg)
+        x = np.array([np.cos(h), np.sin(h)])
+        s, lat = (other - cup) @ x, (other - cup) @ np.array([-x[1], x[0]])
+        return -0.24 - r_other < s < 0.12 + r_other and abs(lat) < 0.06 + r_other
+
+    for _ in range(tries):
+        cups = [spot() for _ in range(3)]
+        cap = spot()
+        if any(np.linalg.norm(c - pyr) < cfg.pyramid_clearance for c in cups):
+            continue
+        if np.linalg.norm(cap - pyr) < cfg.pyramid_clearance - 0.02:
+            continue
+        if any(np.linalg.norm(cups[i] - cups[j]) < cfg.cup_clearance for i in range(3) for j in range(i)):
+            continue
+        if any(np.linalg.norm(cap - c) < r_cup + 0.06 for c in cups):
+            continue
+        if any(in_corridor(cups[k], cups[j], r_cup) for k in range(3) for j in range(k + 1, 3)):
+            continue
+        if any(in_corridor(c, cap, cfg.cap_radius) for c in cups):
+            continue
+        if any(in_corridor(cups[k], bases[j], r_cup + 0.01) for k in range(3) for j in range(min(k, 2))):
+            continue
+        return cups, cap
+    # Nothing found (about a third of the pyramid placements): the nominal spots, which fit, moved a little.
+    return [np.asarray(p, float) + rng.uniform(-0.03, 0.03, 2) for p in cfg.supply_cups], \
+        np.asarray(cfg.cap_spot, float) + rng.uniform(-0.03, 0.03, 2)

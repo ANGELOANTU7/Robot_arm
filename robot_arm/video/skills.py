@@ -310,12 +310,15 @@ def _longest_run(flags: np.ndarray) -> tuple[int, int] | None:
 
 
 def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.ndarray, fps: float):
-    """Split a toss clip into rests of the cap and the throws between them.
+    """Split a toss clip into its throws.
 
-    The cap rests when it hardly moves for 0.25 s away from the fingertips (held still in the hand doesn't count).
-    Between two rests the hand picks it up and throws it: the release is when it leaves the fingertips, and the
-    flight ends where it next comes to rest, in the top cup or on the table. Returns the throws (dicts of frame
-    indices, landing point, whether it went in) and the rests (start, end, table point)."""
+    A throw is where the cap leaves the fingertips fast and stays away from them. It was picked up at the end of
+    the cap's last rest before that (lying still, away from the fingertips for 0.25 s), and it lands where it next
+    comes to rest, if that is seen before the next throw (a missed cap can fly out of view). Every clip ends with
+    the cap in the top cup, so the last throw went in; it is checked against the cup's opening when that was
+    found, and a cap last seen inside the opening may have dropped out of sight behind the cup's wall.
+    Returns the throws (dicts of frame indices, landing point or None, whether it went in) and the rests
+    (start, end, table point)."""
     T = len(track.t)
     cap = track.obj_px
     seen = np.isfinite(cap[:, 0])
@@ -323,7 +326,8 @@ def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.
     tips = hand_px[:, list(PINCH_TIPS)].mean(axis=1)
     r_px = float(np.nanmedian(track.obj_r_px))
     speed = np.linalg.norm(np.gradient(_smooth(filled, fps, 0.05), axis=0), axis=1) * fps  # px/s
-    held = np.linalg.norm(filled - tips, axis=1) < 2.5 * r_px
+    dist = np.linalg.norm(filled - tips, axis=1)
+    held = dist < 2.5 * r_px
     still = (speed < 3 * r_px) & ~held & seen
     k = max(3, int(0.25 * fps))
     rests, i = [], 0
@@ -346,24 +350,43 @@ def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.
         return camera.backproject_to_plane(px, z=in_cup_z if in_cup else props.cap_height / 2)
 
     rest_info = [(a, b, point(a, b, _inside(track.in_cup_px, np.nanmedian(cap[a:b], axis=0)))) for a, b in rests]
+    # Releases: held, then away from the fingertips (and moving fast) for the next 0.1 s.
+    away_k = max(2, int(0.1 * fps))
+    releases = []
+    for i in range(1, T - away_k):
+        if held[i - 1] and not held[i:i + away_k].any() and speed[i:i + away_k].max() > 15 * r_px and \
+                (not releases or i - releases[-1] > int(0.5 * fps)):
+            releases.append(i - 1)
     throws = []
-    for (a0, b0, _), (a1, b1, p1) in zip(rest_info[:-1], rest_info[1:]):
-        seg = np.arange(b0, a1)
-        if len(seg) < 3:
+    for n, rel in enumerate(releases):
+        before = [rb for rb in rest_info if rb[1] <= rel]
+        if not before:
             continue
-        # Lift-off from the rest, and the grasp: the fingertips at the cap just before.
+        a0, b0, _ = before[-1]
         lift = b0
-        near = np.nonzero(np.linalg.norm(tips[max(0, b0 - int(1.0 * fps)):b0 + 1] - filled[b0], axis=1)
-                          < 2.5 * r_px)[0]
-        grasp = max(0, b0 - int(1.0 * fps)) + int(near[0]) if len(near) else b0
-        # Release: the last frame of the segment where the cap is still at the fingertips.
-        with_hand = np.nonzero(held[seg])[0]
-        if not len(with_hand):
-            continue  # nudged, not picked up
-        release = int(seg[with_hand[-1]])
-        in_cup = _inside(track.in_cup_px, np.nanmedian(cap[a1:b1], axis=0))
-        throws.append({"grasp": grasp, "lift": lift, "release": release, "land_frame": a1, "land": p1,
-                       "in_cup": in_cup})
+        near = np.nonzero(dist[max(0, b0 - int(fps)):b0 + 1] < 2.5 * r_px)[0]
+        grasp = max(0, b0 - int(fps)) + int(near[0]) if len(near) else b0
+        nxt = releases[n + 1] if n + 1 < len(releases) else T
+        after = [ra for ra in rest_info if rel < ra[0] < nxt]
+        if after:
+            a1, b1, p1 = after[0]
+            in_cup = _inside(track.in_cup_px, np.nanmedian(cap[a1:b1], axis=0))
+            throws.append({"grasp": grasp, "lift": lift, "release": rel, "land_frame": a1, "land": p1,
+                           "in_cup": in_cup})
+        else:
+            seg = np.arange(rel, nxt)
+            seen_after = np.nonzero(seen[seg])[0]
+            last = int(seg[seen_after[-1]]) if len(seen_after) else rel
+            gone_in = n == len(releases) - 1 and _inside(track.in_cup_px, filled[last])
+            land = camera.backproject_to_plane(track.in_cup_px.mean(axis=0), z=in_cup_z) if gone_in else None
+            throws.append({"grasp": grasp, "lift": lift, "release": rel, "land_frame": min(last + 1, T - 1),
+                           "land": land, "in_cup": gone_in})
+    if throws and not any(th["in_cup"] for th in throws) and throws[-1]["land"] is not None:
+        # The clip ends with the cap in the cup: the last landing is in it, even if the opening wasn't found.
+        a1 = throws[-1]["land_frame"]
+        b1 = next((rb for ra, rb, _ in rest_info if ra == a1), a1 + 1)
+        throws[-1]["land"] = point(a1, b1, True)
+        throws[-1]["in_cup"] = True
     # A throw that went in, and everything after it, ends the clip (the thumbs-up follows).
     last_in = max((k for k, th in enumerate(throws) if th["in_cup"]), default=None)
     if last_in is not None:
@@ -380,6 +403,14 @@ def _fit_throw(track: SkillTrack, camera: Camera, pinch: np.ndarray, th: dict,
     frames = frames[np.isfinite(track.obj_px[frames, 0])]
     p_rel = pinch[r]
     t_land = t[L]
+    if th["land"] is None:  # flew out of view: the flight seen until then, starting at the fingertips
+        frames = frames[frames <= r + int(0.3 * fps)]
+        if len(frames) < 3:
+            return p_rel, np.zeros(3)
+        uv = track.obj_px[frames]
+        far = camera.backproject_to_plane(uv[-1], z=p_rel[2])
+        v_init = (far - p_rel) / max(t[frames[-1]] - t[r], 1.0 / fps)
+        return fit_flight(t[frames], uv, camera, t[r], p_rel, v_init)
     # It lands when it reaches its resting height: the top cup's bottom, or the table.
     tf = max(t_land - t[r], 1.0 / fps)
     v_init = (th["land"] - p_rel + np.array([0, 0, 0.5 * GRAVITY * tf * tf])) / tf

@@ -23,6 +23,12 @@ PINCH_POINT = np.array([0.1275, 0.0942, 0.0258])
 PINCH_DOWN = np.array([0.283, 0.937, 0.204])
 PINCH_AXIS = np.array([-0.939, 0.242, -0.246])
 
+# Thumbs-up: the two fingers curled into a fist, the thumb straight out of the palm side. In the
+# right_wrist_yaw_link frame the thumb then points along THUMB_DIR (from its middle joint to its tip), so the
+# hand rolled a quarter turn about its fingers' axis from the side grasp has the thumb pointing up.
+THUMBS_UP = np.array([0.0, 0.4, 0.0, 1.4, 1.6, 1.4, 1.6])
+THUMB_DIR = np.array([-0.392, 0.92, -0.003])
+
 
 def pinch_frame(throw_dir: np.ndarray) -> np.ndarray:
     """Hand orientation with the claw pinch pointing down and the thumb-index axis horizontal, across the
@@ -42,11 +48,14 @@ def site_for_pinch(pinch_world: np.ndarray, R: np.ndarray) -> np.ndarray:
     return pinch_world + R @ (np.asarray(GRASP_SITE_POS) - PINCH_POINT)
 
 
-def hand_targets(grip: float, pinch: bool = False) -> np.ndarray:
-    """Grasp synergy: grip in [-1, 1] (-1 open, 1 closed) -> 7 finger joint targets. `pinch` selects the
-    fingertip pinch (for the cap) instead of the whole-hand wrap (for cups)."""
+SHAPES = {"wrap": (HAND_OPEN, HAND_CLOSED), "pinch": (PINCH_OPEN, PINCH_CLOSED), "thumbs_up": (HAND_OPEN, THUMBS_UP)}
+
+
+def hand_targets(grip: float, shape: str = "wrap") -> np.ndarray:
+    """Hand synergy: grip in [-1, 1] (-1 open, 1 closed) -> 7 finger joint targets. `shape` is what closing
+    makes: the whole-hand wrap (cups), the fingertip pinch (the cap) or a thumbs-up."""
     s = (np.clip(grip, -1.0, 1.0) + 1.0) / 2.0
-    lo, hi = (PINCH_OPEN, PINCH_CLOSED) if pinch else (HAND_OPEN, HAND_CLOSED)
+    lo, hi = SHAPES[shape]
     return lo + s * (hi - lo)
 
 
@@ -127,14 +136,14 @@ class G1HandController:
         self.q_prev = None
 
     def apply(self, data: mujoco.MjData, target_pos: np.ndarray, target_mat: np.ndarray, grip: float,
-              dt: float, pinch: bool = False) -> None:
+              dt: float, shape: str = "wrap") -> None:
         """Solve IK for the target and command it with velocity feed-forward (dt: time since the last call)."""
         start = self.q_prev if self.q_prev is not None else data.qpos[self.ids.arm_qpos].copy()
         q = self.solve(data.qpos, target_pos, target_mat, q_start=start)
         qdot = (q - start) / dt if self.q_prev is not None else 0.0
         self.q_prev = q
         data.ctrl[self.ids.arm_ctrl] = q + self.lag * qdot
-        data.ctrl[self.ids.hand_ctrl] = hand_targets(grip, pinch)
+        data.ctrl[self.ids.hand_ctrl] = hand_targets(grip, shape)
 
 
 assert len(HAND_OPEN) == len(RIGHT_HAND)

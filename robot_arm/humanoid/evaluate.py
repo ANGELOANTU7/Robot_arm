@@ -7,11 +7,11 @@ from pathlib import Path
 import imageio.v2 as imageio
 import numpy as np
 
-from robot_arm.humanoid.envs import OBS_STAGE, G1PyramidEnv
+from robot_arm.humanoid.envs import OBS_STAGE, TOSS, G1PyramidEnv
 
 
 class StagePolicy:
-    """Routes each observation to the place policy (stages 0-2) or the toss policy (stage 3)."""
+    """Routes each observation to the place policy (stages 0-2) or the toss policy (stages 3-4: throw, thumbs-up)."""
 
     def __init__(self, place, toss):
         self.place, self.toss = place, toss
@@ -22,7 +22,7 @@ class StagePolicy:
                 p.reset()
 
     def __call__(self, obs):
-        return self.toss(obs) if int(np.argmax(obs[OBS_STAGE])) == 3 else self.place(obs)
+        return self.toss(obs) if int(np.argmax(obs[OBS_STAGE])) >= TOSS else self.place(obs)
 
 
 def make_policy(spec: str, device: str = "cpu"):
@@ -67,7 +67,7 @@ def _episode(args):
         Path(video).parent.mkdir(parents=True, exist_ok=True)
         imageio.mimsave(video, frames, fps=env.metadata["render_fps"], macro_block_size=1)
     reason = info["fail_reason"] or ("ok" if info["is_success"] else "timeout")
-    return bool(info["is_success"]), int(info["stage"]), reason
+    return bool(info["is_success"]), int(info["stage"]), reason, int(info["misses"])
 
 
 def evaluate_g1(task: str = "full", spec: str = "scripted", episodes: int = 50, stage: int | None = None,
@@ -85,4 +85,5 @@ def evaluate_g1(task: str = "full", spec: str = "scripted", episodes: int = 50, 
         "success_rate": float(np.mean(success)),
         "reached_stage": dict(sorted(Counter(r[1] for r in results).items())),
         "outcomes": dict(Counter(r[2] for r in results)),
+        "misses_per_episode": float(np.mean([r[3] for r in results])),
     }

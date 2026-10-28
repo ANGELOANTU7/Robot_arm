@@ -11,15 +11,34 @@ from robot_arm.video.skills import SkillDemo
 _ENVS = {}
 
 
-def load_skill_demos(folder: str | Path) -> dict[str, list[SkillDemo]]:
-    """SkillDemos in a folder, by skill (place_base, place_top, toss)."""
+def demo_problem(demo: SkillDemo) -> str | None:
+    """Why a reconstructed demo is too unreliable to learn from, or None."""
+    info = demo.info
+    if info.get("grasp_anchor_err", 0.0) > 0.12:
+        return "the hand is far from the object at the grasp (depth scale)"
+    if not 0.52 < info.get("scale", 1.0) < 1.98:
+        return "depth scale at the edge of its search range"
+    if demo.skill != "toss" and demo.t_release - demo.t_grasp < 0.25:
+        return "grasp and release not told apart"
+    if demo.skill == "toss" and not np.isfinite(demo.release_vel).all():
+        return "no throw"
+    return None
+
+
+def load_skill_demos(folder: str | Path, check: bool = True) -> dict[str, list[SkillDemo]]:
+    """SkillDemos in a folder, by skill (place_base, place_top, toss). With `check`, demos whose reconstruction
+    is unreliable (see demo_problem) are left out; their names are in out["rejected"]."""
     paths = sorted(p for p in Path(folder).glob("*.npz") if not p.stem.endswith("_camera"))
     if not paths:
         raise FileNotFoundError(f"No skill demos (*.npz) in {folder}")
-    out: dict[str, list[SkillDemo]] = {"place_base": [], "place_top": [], "toss": []}
+    out: dict[str, list] = {"place_base": [], "place_top": [], "toss": [], "rejected": []}
     for p in paths:
         demo = SkillDemo.load(p)
         demo.info["name"] = p.stem  # kept in memory only
+        problem = demo_problem(demo) if check else None
+        if problem:
+            out["rejected"].append((p.stem, problem))
+            continue
         out.setdefault(demo.skill, []).append(demo)
     return out
 
@@ -61,17 +80,19 @@ def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes:
 
     Every episode draws one human demo per place stage (place_base for both base cups, place_top for the top
     cup) and one throw style."""
+    from robot_arm.humanoid.retarget import place_demos_by_cup
+
     rng = np.random.default_rng(seed)
-    base, top = demos.get("place_base", []), demos.get("place_top", [])
-    if not base or not top or not styles:
+    if not demos.get("place_base") or not demos.get("place_top") or not styles:
         raise ValueError("Need at least one place_base, one place_top and one toss demo.")
+    base_a, base_b, top = place_demos_by_cup(demos)
     tasks, probs = zip(*task_mix)
     jobs, meta = [], []
     for _ in range(episodes):
         task = str(rng.choice(tasks, p=np.array(probs) / sum(probs)))
-        ia, ib, it, js = (int(rng.integers(len(base))), int(rng.integers(len(base))), int(rng.integers(len(top))),
-                          int(rng.integers(len(styles))))
-        place = {0: base[ia], 1: base[ib], 2: top[it]}
+        ia, ib, it, js = (int(rng.integers(len(base_a))), int(rng.integers(len(base_b))),
+                          int(rng.integers(len(top))), int(rng.integers(len(styles))))
+        place = {0: base_a[ia], 1: base_b[ib], 2: top[it]}
         ep_noise = 0.0 if rng.random() < clean_fraction else noise
         jobs.append((task, place, styles[js], int(rng.integers(1 << 30)), ep_noise))
         meta.append({"task": task, "demos": [ia, ib, it], "style": js, "noise": ep_noise})
@@ -84,7 +105,7 @@ def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes:
         m["done_stages"] = done
         for stage in done:
             sel = st == stage
-            key = "toss" if stage == 3 else "place"
+            key = "toss" if stage >= 3 else "place"
             for buf, x in zip(keep[key], (o[sel], a[sel], np.full(sel.sum(), e), st[sel])):
                 buf.append(x)
     out = {"meta": meta}
@@ -102,15 +123,17 @@ def summarize(meta: list[dict]) -> dict:
         ms = [m for m in meta if m["task"] == task]
         row = {"episodes": len(ms)}
         if task == "full":
-            for s in range(4):
+            for s in range(5):
                 row[f"stage{s}"] = round(float(np.mean([s in m["done_stages"] for m in ms])), 3)
         else:
-            row["success"] = round(float(np.mean([len(m["done_stages"]) > 0 for m in ms])), 3)
+            last = 4 if task == "toss" else None  # the throw, then the thumbs-up
+            row["success"] = round(float(np.mean([(last in m["done_stages"]) if last else len(m["done_stages"]) > 0
+                                                  for m in ms])), 3)
         out[task] = row
     tossed = [m for m in meta if m["task"] == "toss" or (m["task"] == "full" and 2 in m["done_stages"])]
     by_style = {}
     for m in tossed:
-        by_style.setdefault(m["style"], []).append(3 in m["done_stages"])
+        by_style.setdefault(m["style"], []).append(4 in m["done_stages"])
     out["toss_success_by_style"] = {int(k): round(float(np.mean(v)), 2) for k, v in sorted(by_style.items())}
     return out
 

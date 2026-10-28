@@ -68,7 +68,10 @@ def main():
     args = p.parse_args()
 
     demos = load_skill_demos(args.human)
+    rejected = demos.pop("rejected")
     print(f"Loaded from {args.human}: " + ", ".join(f"{len(v)} {k}" for k, v in demos.items()))
+    for name, why in rejected:
+        print(f"  left out {name}: {why}")
     if args.styles:
         styles = json.loads(args.styles.read_text())
     else:
@@ -90,6 +93,8 @@ def main():
         vid_dir = args.out / "g1_retarget_videos"
         vid_dir.mkdir(exist_ok=True)
         for skill, items in demos.items():
+            if skill not in ("place_base", "place_top", "toss"):
+                continue
             for k, demo in enumerate(items[: args.videos]):
                 name = demo.info["name"]
                 style = styles[k] if skill == "toss" else None

@@ -13,6 +13,10 @@ Placing a cup. The human's hand path is mapped with two anchors, as for the Pand
   - the motion is re-timed only where it is faster than the arm can follow.
 - A closed-loop tracking expert follows the path. Its grasp, the fine alignment over the target, lowering,
   and release are triggered by the state, as the Panda work showed is necessary for clean labels.
+- The hand turns about the vertical the way the human's did while reaching (relative to the grasp heading).
+- The top cup is turned over the robot's way once it is picked up: carried mouth-down to above the pyramid,
+  rolled half a turn there and put down (see scripted.PlaceExpert). The G1's arm cannot roll a held cup
+  everywhere along a human path, and where the cup is let go of decides whether the pyramid stands.
 
 Throwing the cap. The pinch itself is the robot's own (the Dex3 has three fingers, and where they meet the cap
 is a matter of millimetres), so the human contributes the throw's style:
@@ -29,9 +33,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
-from robot_arm.humanoid.envs import OBS_CAP, OBS_SITE, OBS_STAGE, OBS_TARGET, G1PyramidEnv, obs_cup
-from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point
-from robot_arm.humanoid.scripted import BACK_OFF, OPEN_STEPS, PlaceExpert, TossExpert, grasp_frame, hand_frame, to_action
+from robot_arm.humanoid.envs import OBS_CAP, OBS_SITE, OBS_STAGE, OBS_TARGET, TOSS, G1PyramidEnv, obs_cup
+from robot_arm.humanoid.objects import (ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point,
+                                        reach_heading)
+from robot_arm.humanoid.scripted import (OPEN_STEPS, PlaceExpert, TossExpert, grasp_frame, hand_frame, roll_x,
+                                         taper_angle, to_action)
 from robot_arm.synthetic import min_jerk
 from robot_arm.video.skills import GRAVITY, SkillDemo
 
@@ -70,8 +76,10 @@ class PlacePlan:
     grasp_idx: int  # arrive at the cup
     over_idx: int  # the carried cup is about over its target: align and lower from here
     release_idx: int
-    yaw: float  # robot hand heading
+    yaw: float  # robot hand heading at the grasp
     human_times: np.ndarray = field(default_factory=lambda: np.zeros(0))  # human time of each waypoint
+    place_yaw: float = 0.0  # robot hand heading when putting the cup down
+    turn: np.ndarray = field(default_factory=lambda: np.zeros(0))  # per waypoint: heading change while reaching
 
 
 @dataclass
@@ -94,23 +102,26 @@ def place_obstacles(obs: np.ndarray, stage: int, cfg: G1TaskConfig = G1_CFG) -> 
 
 def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r: np.ndarray,
                obstacles: list[Obstacle], held_cup: Obstacle, hang: float, cfg: G1TaskConfig = G1_CFG,
-               yaw: float = 0.0, scale: float = ARM_SCALE, pre_dist: float = 0.16, max_speed: float = 0.25,
-               clearance: float = 0.07) -> PlacePlan:
+               yaw: float = 0.0, place_yaw: float | None = None, scale: float = ARM_SCALE, pre_dist: float = 0.16,
+               max_speed: float = 0.25, clearance: float = 0.07, max_turn: float = 0.6) -> PlacePlan:
     """Grasp-site path for the robot from a human place demo.
 
     grasp_r / place_r: robot grasp-site position at the grasp and when the cup stands on its target. hang: how
-    far the held cup reaches below the grasp site. held_cup: the cup to pick (an obstacle until the grasp)."""
+    far the held cup reaches below the grasp site. held_cup: the cup to pick (an obstacle until the grasp).
+    yaw / place_yaw: the robot hand's heading at the grasp and when putting the cup down."""
     t = demo.t
+    place_yaw = yaw if place_yaw is None else place_yaw
     g_h = demo.palm + PALM_TO_AXIS * demo.palm_rot[:, :, 2]
     i_g, i_r = _index(t, demo.t_grasp), _index(t, demo.t_release)
     i_r = max(i_r, i_g + 2)
     rob_x = np.array([np.cos(yaw), np.sin(yaw), 0.0])
+    human_heading = np.unwrap([heading(R @ HUMAN_TO_ROBOT_HAND) for R in demo.palm_rot])
 
-    def anchor_map(i, target):
-        Q = rot_z(yaw - heading(demo.palm_rot[i] @ HUMAN_TO_ROBOT_HAND))
+    def anchor_map(i, target, robot_yaw):
+        Q = rot_z(robot_yaw - human_heading[i])
         return target + scale * (g_h - g_h[i]) @ Q.T
 
-    P_g, P_p = anchor_map(i_g, grasp_r), anchor_map(i_r, place_r)
+    P_g, P_p = anchor_map(i_g, grasp_r, yaw), anchor_map(i_r, place_r, place_yaw)
     w = np.clip((t - (t[i_g] + 0.25 * (t[i_r] - t[i_g]))) / (0.5 * (t[i_r] - t[i_g])), 0, 1)
     w = 10 * w ** 3 - 15 * w ** 4 + 6 * w ** 5
     path = (1 - w)[:, None] * P_g + w[:, None] * P_p
@@ -160,6 +171,12 @@ def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r:
         path[:, 2] = np.maximum(path[:, 2], z_req)
     path[:i_pre, 2] = np.maximum(path[:i_pre, 2], pre[2])  # never dive below the approach height early on
     path[:, 2] = np.maximum(path[:, 2], T + 0.03)
+    # The hand's turn about the vertical while reaching, relative to its heading at the grasp; none from the
+    # slide onto the cup on.
+    turn = np.clip(human_heading - human_heading[i_g], -max_turn, max_turn)
+    turn[i_pre:] = 0.0
+    if i_pre > i_b:
+        turn[i_b:i_pre + 1] *= 1 - _mj(i_pre - i_b + 1)
 
     # Re-time: the human's timing where it is slow enough, stretched where the arm cannot follow.
     seg = np.linalg.norm(np.diff(path, axis=0), axis=1)
@@ -167,13 +184,14 @@ def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r:
     steps = np.arange(0.0, t_robot[-1] + 1e-9, cfg.control_dt)
     wp = np.column_stack([np.interp(steps, t_robot, path[:, k]) for k in range(3)])
     human_t = np.interp(steps, t_robot, t)
+    turn = np.interp(steps, t_robot, turn)
     grasp_idx = int(np.searchsorted(steps, t_robot[i_g]))
     release_idx = int(np.searchsorted(steps, t_robot[i_r]))
     horiz = np.linalg.norm(wp[grasp_idx:release_idx + 1, :2] - place_r[:2], axis=1)
     near = np.nonzero(horiz < 0.03)[0]
     over_idx = grasp_idx + (int(near[0]) if len(near) else release_idx - grasp_idx)
     return PlacePlan(wp, min(grasp_idx, len(wp) - 1), min(over_idx, len(wp) - 1), min(release_idx, len(wp) - 1),
-                     yaw, human_t)
+                     yaw, human_t, place_yaw, turn)
 
 
 def place_plan_for_obs(demo: SkillDemo, obs: np.ndarray, cfg: G1TaskConfig = G1_CFG, **kwargs) -> PlacePlan:
@@ -184,8 +202,12 @@ def place_plan_for_obs(demo: SkillDemo, obs: np.ndarray, cfg: G1TaskConfig = G1_
     grasp_r = cup_grasp_point(pos, axis, frac, cfg)
     final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[stage] is UP else np.array([0, 0, -1.0])
     place_r = cup_grasp_point(obs[OBS_TARGET], final_axis, frac, cfg) + [0, 0, 0.003]
+    if stage == 2 and axis[2] < 0:  # held where it will be held once turned over (see PlaceExpert)
+        grasp_r = cup_grasp_point(pos, axis, 1 - frac, cfg)
     top = pos[2] if axis[2] < 0 else pos[2] + cfg.cup.height
     hang = frac * cfg.cup.height
+    kwargs.setdefault("yaw", reach_heading(pos, cfg))
+    kwargs.setdefault("place_yaw", 0.0)
     return plan_place(demo, obs[OBS_SITE], grasp_r, place_r, place_obstacles(obs, stage, cfg),
                       Obstacle(pos[:2].copy(), float(top)), hang, cfg, **kwargs)
 
@@ -197,8 +219,8 @@ class PlaceTracker:
     - the final approach and the grasp servo onto the cup's actual grasp point;
     - during the carry the held cup (not the hand) is servoed along the plan, so slip in the grasp is corrected;
     - once the cup is about over its target, it is aligned and lowered straight down;
-    - the hand opens when the cup stands on the target, then follows the plan's retreat (out of the mouth-up top
-      cup it first slides back along the fingers, as rising would drag the cup by its widening walls).
+    - the hand opens when the cup stands on the target (or stops sinking), then follows the plan's retreat.
+    The top cup, once held, is turned over and put down by the scripted expert (see the module docstring).
     """
 
     FINE_PHASES = ("approach", "close", "lower", "open", "back")
@@ -212,10 +234,13 @@ class PlaceTracker:
         self.cup0 = None
         self.offset0 = None
         self.release_site = None
+        self.expert, self.z_hist = None, []
 
     @property
     def fine(self) -> bool:
         """In a phase where exploration noise would only spoil the contact."""
+        if self.expert is not None:
+            return self.expert.phase in ("flip", "lower", "open", "back")
         return self.phase in self.FINE_PHASES
 
     def _advance(self, site, goal, end):
@@ -225,15 +250,22 @@ class PlaceTracker:
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg, plan = self.cfg, self.plan
         stage = int(np.argmax(obs[OBS_STAGE]))
+        if self.expert is not None:
+            return self.expert(obs)
         site = obs[OBS_SITE]
         cup_pos, cup_axis = obs_cup(obs, stage)
         if self.cup0 is None:
             self.cup0 = cup_pos.copy()
+            self.flip = ORIENTATIONS[stage] is UP and cup_axis[2] < 0
         frac = cfg.top_grasp_height_frac if stage == 2 else cfg.grasp_height_frac
-        grasp = cup_grasp_point(cup_pos, cup_axis, frac, cfg)
+        grasp = cup_grasp_point(cup_pos, cup_axis, 1 - frac if self.flip else frac, cfg)
         target = obs[OBS_TARGET]
-        R = grasp_frame(plan.yaw, ORIENTATIONS[stage] is UP, cfg)
-        xh = hand_frame(plan.yaw)[:, 0]
+        if self.flip:
+            R_grasp = hand_frame(plan.yaw) @ roll_x(-taper_angle(cfg))
+        else:
+            R_grasp = grasp_frame(plan.yaw, ORIENTATIONS[stage] is UP, cfg)
+        R = R_grasp
+        R_place = grasp_frame(plan.place_yaw, ORIENTATIONS[stage] is UP, cfg)
         self.timer += 1
         grip = -1.0
         near = lambda p, tol: np.linalg.norm(p - site) < tol  # noqa: E731
@@ -241,6 +273,8 @@ class PlaceTracker:
         if self.phase == "follow":
             ramp = self.idx / max(plan.grasp_idx, 1)
             goal = plan.waypoints[self.idx] + ramp * (cup_pos - self.cup0)  # follow the cup if it was nudged
+            if len(plan.turn):
+                R = rot_z(plan.turn[min(self.idx, len(plan.turn) - 1)]) @ R_grasp  # the human's turn while reaching
             self._advance(site, goal, plan.grasp_idx)
             if self.idx >= plan.grasp_idx:
                 self.phase, self.timer = "approach", 0
@@ -251,12 +285,18 @@ class PlaceTracker:
         if self.phase == "close":
             goal, grip = grasp, 1.0
             if self.timer > 8:
+                if self.flip:  # held: the robot's own way of turning it over and putting it down
+                    self.expert = PlaceExpert(cfg, yaw=plan.yaw, top_place_yaw=plan.place_yaw)
+                    self.expert.stage, self.expert.phase = stage, "lift"
+                    return self.expert(obs)
                 self.phase, self.idx = "carry", plan.grasp_idx
                 self.offset0 = site - cup_pos
                 self.anchor = site - plan.waypoints[plan.grasp_idx]  # where the grasp really happened
         final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[stage] is UP else np.array([0, 0, -1.0])
         cup_tp, target_tp = cup_table_point(cup_pos, cup_axis, cfg), cup_table_point(target, final_axis, cfg)
         cup_offset = site - cup_tp
+        if self.phase in ("carry", "align", "lower", "open", "retreat"):
+            R = R_place  # turning to the placing heading while carrying
         if self.phase == "carry":
             # Start from where the grasp really happened (fading towards the plan's own target) and correct slip
             # in the grasp.
@@ -264,29 +304,31 @@ class PlaceTracker:
             goal, grip = plan.waypoints[self.idx] + fade * self.anchor + (cup_offset - self.offset0), 1.0
             self._advance(site, goal, plan.over_idx)
             if self.idx >= plan.over_idx:
-                self.phase = "align"
+                self.phase, self.timer = "align", 0
                 self.align_z = max(plan.waypoints[plan.over_idx, 2], site[2])
         if self.phase == "align":
             goal, grip = np.array([*(target_tp[:2] + cup_offset[:2]), self.align_z]), 1.0
-            if np.linalg.norm(cup_tp[:2] - target_tp[:2]) < 0.006:
+            off = np.linalg.norm(cup_tp[:2] - target_tp[:2])
+            if off < 0.006 or (self.timer > 20 and off < 0.012):
                 self.phase = "lower"
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
             goal[2] = max(goal[2], site[2] - cfg.max_step)
-            if cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2] < 0.003:  # touched down
+            self.z_hist.append(cup_pos[2])
+            stalled = len(self.z_hist) > 3 and self.z_hist[-4] - self.z_hist[-1] < 0.002
+            above = cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2]
+            if above < 0.003 or (above < 0.012 and stalled):  # touched down
                 self.phase, self.timer = "open", 0
         if self.phase == "open":
             goal = site
             if self.timer > OPEN_STEPS:  # fully open (see release_rate)
-                self.phase, self.release_site = ("back" if stage == 2 else "retreat"), site.copy()
-                self.idx = plan.release_idx
-        if self.phase == "back":
-            goal = self.release_site - BACK_OFF * xh
-            if near(goal, 0.01):
                 self.phase, self.release_site = "retreat", site.copy()
+                self.idx = plan.release_idx
         if self.phase == "retreat":
             goal = self.release_site + plan.waypoints[self.idx] - plan.waypoints[plan.release_idx]
             self._advance(site, goal, len(plan.waypoints) - 1)
+            if self.idx >= len(plan.waypoints) - 1:  # the human's retreat ends low: rise clear of the cups
+                goal = np.array([site[0], site[1], max(goal[2], cfg.table_height + 0.30)])
         return to_action(obs, goal, R, grip, cfg.max_step, cfg)
 
 
@@ -338,8 +380,8 @@ def toss_params(style: dict, bounds: dict | None = None) -> dict:
 
 
 def _toss_episode(args):
-    """One toss episode with the given expert parameters: (success, miss vector at the mouth plane or None,
-    outcome)."""
+    """The first throw of a toss episode with the given expert parameters: (in the cup, miss vector at the mouth
+    plane or None, outcome)."""
     params, seed = args
     env = G1PyramidEnv(task="toss")
     expert = TossExpert(**params)
@@ -353,10 +395,11 @@ def _toss_episode(args):
             f = (prev[2] - mouth[2]) / (prev[2] - cap[2])
             miss = (prev + f * (cap - prev) - mouth)[:2]
         prev = cap.copy()
-        if terminated or truncated:
+        if terminated or truncated or env.stage > TOSS or env.misses:  # the first throw decides
             break
-    outcome = "ok" if info["is_success"] else info["fail_reason"] or "timeout"
-    return bool(info["is_success"]), miss, outcome
+    success = env.stage > TOSS and env.misses == 0
+    outcome = "ok" if success else info["fail_reason"] or ("missed" if env.misses else "timeout")
+    return bool(success), miss, outcome
 
 
 def calibrate_aim(params: dict, rounds: int = 3, episodes: int = 16, seed: int = 50_000, pool=None) -> dict:
@@ -414,20 +457,21 @@ class G1Retargeter:
 
     @property
     def fine(self) -> bool:
-        if self.stage == 3:
-            # Also while the hand leaves the top cup it has just placed: a nudge there knocks it over.
-            return self.toss.phase in ("back", "rise", "down", "pinch", "settle", "swing", "release")
+        if self.stage is not None and self.stage >= TOSS:
+            return self.toss.phase in ("back", "rise", "down", "pinch", "settle", "swing", "release", "thumbs_up")
+        if isinstance(self.tracker, PlaceExpert):
+            return self.tracker.phase in ("approach", "close", "flip", "lower", "open", "back")
         return self.tracker is not None and self.tracker.fine
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         stage = int(np.argmax(obs[OBS_STAGE]))
         if stage != self.stage:
             self.stage = stage
-            if stage < 3:
+            if stage < TOSS:
                 demo = self.place_demos.get(stage)
                 self.tracker = PlaceTracker(place_plan_for_obs(demo, obs, self.cfg), self.cfg) if demo else \
                     PlaceExpert(self.cfg)
-        if stage == 3:
+        if stage >= TOSS:
             return self.toss(obs)
         return self.tracker(obs)
 
@@ -463,6 +507,16 @@ def rollout(env: G1PyramidEnv, policy: G1Retargeter, rng: np.random.Generator, n
     return (np.array(observations), np.array(labels), np.array(stages), done_stages, info, frames)
 
 
+def place_demos_by_cup(demos: dict[str, list[SkillDemo]]):
+    """(cup A demos, cup B demos, top cup demos). Base clips showing both base cups give one demo per cup (cup B's
+    knows where A stood); single-cup base demos serve for either."""
+    base = demos["place_base"]
+    b = [d for d in base if "other_x" in d.info]
+    a = [d for d in base if "other_x" not in d.info and str(d.info.get("name", "")).endswith("_a")] or \
+        [d for d in base if "other_x" not in d.info] or base
+    return a, b or base, demos["place_top"]
+
+
 class G1ReplayPolicy:
     """Baseline without learning: the retargeted experts, taking the human demos and throw styles in turn."""
 
@@ -475,9 +529,9 @@ class G1ReplayPolicy:
         self.k = k
 
     def reset(self):
-        base, top, k = self.demos["place_base"], self.demos["place_top"], self.k
+        a, b, top, k = place_demos_by_cup(self.demos) + (self.k,)
         self.k += 1
-        place = {0: base[k % len(base)], 1: base[(k + 1) % len(base)], 2: top[k % len(top)]}
+        place = {0: a[k % len(a)], 1: b[k % len(b)], 2: top[k % len(top)]}
         style = self.styles[k % len(self.styles)] if self.styles else None
         self.current = G1Retargeter(place, expert_params(style), self.cfg)
 

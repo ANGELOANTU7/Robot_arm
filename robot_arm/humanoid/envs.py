@@ -1,11 +1,12 @@
 """Gymnasium environments for the G1 cup pyramid.
 
 One class, three tasks:
-- "place": put one cup (stage 0: base A, 1: base B, 2: top) from its supply spot onto the pyramid;
-  earlier cups are already in place.
-- "toss": the pyramid is built; pick the cap off its stand and throw it into the top cup from at least
-  `min_throw_distance` away.
-- "full": everything from the supply spots. The stage advances automatically when a stage succeeds; the
+- "place": put one cup (stage 0: base A, 1: base B, 2: top) from where it lies (mouth down) onto the pyramid;
+  earlier cups are already in place. The top cup goes on mouth-up, so it has to be turned over.
+- "toss": the pyramid is built; pick the cap off the table and throw it into the top cup from at least
+  `min_throw_distance` away (stage 3). A miss is not the end: the cap is picked up wherever it landed and
+  thrown again. Once it is in, a thumbs-up (stage 4).
+- "full": everything from the start. The stage advances automatically when a stage succeeds; the
   observation tells the policy which stage it is in.
 """
 
@@ -14,15 +15,15 @@ import mujoco
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
-from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch_frame, rotation_error,
-                                           rotvec_to_mat, site_for_pinch)
+from robot_arm.humanoid.controller import (THUMB_DIR, G1HandController, hand_targets, pinch_frame,
+                                           rotation_error, rotvec_to_mat, site_for_pinch)
 from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, START_ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout,
-                                        base_pair_ok,
-                                        base_spacing, cap_in_cup, cup_axis, cup_grasp_point, cup_in_place,
-                                        pyramid_standing, top_cup_resting)
+                                        base_pair_ok, base_spacing, cap_in_cup, cup_axis, cup_grasp_point,
+                                        cup_in_place, pyramid_standing, sample_layout, top_cup_resting)
 from robot_arm.humanoid.scene import G1Ids, build_model
 
-N_STAGES = 4  # place cup0, place cup1, place cup2, toss
+N_STAGES = 5  # place cup0, place cup1, place cup2, toss, thumbs-up
+TOSS, THUMBS_UP = 3, 4
 SUCCESS_REWARD = 10.0
 # Observation layout.
 OBS_SITE = slice(27, 30)
@@ -30,14 +31,14 @@ OBS_HAND_ROT = slice(30, 36)
 OBS_CUPS = slice(36, 54)  # 3 x (position, mouth axis)
 OBS_CAP = slice(54, 57)
 OBS_CAP_VEL = slice(57, 60)
-OBS_STAGE = slice(60, 64)
-OBS_TARGET = slice(64, 67)
-OBS_TO_OBJECT = slice(67, 70)  # active object's grasp point - grasp site
-OBS_OBJ_TO_TARGET = slice(70, 73)  # target - active object
-OBS_GRIP = 73
-OBS_CMD_POS = slice(74, 77)  # commanded grasp-site position - actual
-OBS_CMD_ROT = slice(77, 80)  # rotation from the actual hand orientation to the commanded one
-OBS_DIM = 80
+OBS_STAGE = slice(60, 65)
+OBS_TARGET = slice(65, 68)
+OBS_TO_OBJECT = slice(68, 71)  # active object's grasp point - grasp site (thumbs-up: the spot - grasp site)
+OBS_OBJ_TO_TARGET = slice(71, 74)  # target - active object
+OBS_GRIP = 74
+OBS_CMD_POS = slice(75, 78)  # commanded grasp-site position - actual
+OBS_CMD_ROT = slice(78, 81)  # rotation from the actual hand orientation to the commanded one
+OBS_DIM = 81
 ACT_DIM = 7  # palm translation (3), palm rotation (3), grip (1: -1 open .. 1 closed)
 
 
@@ -57,13 +58,7 @@ class G1PyramidEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         self.ids = G1Ids(self.model)
         self.controller = G1HandController(self.model, self.ids)
-        # Arm posture for the cap pinch (hand turned palm-down over the cap spot): the IK's null space pulls
-        # towards it while tossing, so the arm does not wander into its joint limits while turning the hand.
-        u = np.array([np.cos(cfg.pyramid_yaw), np.sin(cfg.pyramid_yaw), 0.0])
-        R = pinch_frame(-u)
-        above_cap = np.array([*cfg.cap_spot, cfg.table_height + 0.12])
-        self.pinch_posture = self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R), R,
-                                                   q_start=self.controller.home, iters=400)
+        self.pinch_posture = self._pinch_posture(cfg.cap_spot)
         self.render_mode, self.camera = render_mode, camera
         self._renderer = mujoco.Renderer(self.model, height, width) if render_mode else None
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)
@@ -73,6 +68,15 @@ class G1PyramidEnv(gym.Env):
         self.max_steps = int(round(seconds / cfg.control_dt))
         self.ws_lo = np.array([0.05, -0.55, cfg.table_height + 0.01])
         self.ws_hi = np.array([0.65, 0.35, cfg.table_height + 0.55])
+
+    def _pinch_posture(self, cap_xy) -> np.ndarray:
+        """Arm posture for the cap pinch (hand turned palm-down over the cap): the IK's null space pulls towards
+        it while tossing, so the arm does not wander into its joint limits while turning the hand."""
+        u = np.array([np.cos(self.cfg.pyramid_yaw), np.sin(self.cfg.pyramid_yaw), 0.0])
+        R = pinch_frame(-u)
+        above_cap = np.array([*cap_xy[:2], self.cfg.table_height + 0.12])
+        return self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R), R,
+                                     q_start=self.controller.home, iters=400)
 
     # ------------------------------------------------------------------ state
     @property
@@ -89,6 +93,15 @@ class G1PyramidEnv(gym.Env):
     @property
     def cap_pos(self) -> np.ndarray:
         return self.data.xpos[self.ids.cap_body].copy()
+
+    @property
+    def thumb_up(self) -> float:
+        """Upward component of the thumb's direction (1: pointing straight up)."""
+        return float((self.hand_mat @ THUMB_DIR)[2])
+
+    @property
+    def mouth(self) -> np.ndarray:
+        return self.cup_pos(2) + cup_axis(self.data, self.ids.cup_bodies[2]) * self.cfg.cup.height
 
     def hand_touches(self, geoms: set) -> bool:
         hand = self.ids.hand_geoms
@@ -126,9 +139,10 @@ class G1PyramidEnv(gym.Env):
                     break
             if info["is_success"]:
                 break
-        self.stage = 3
+        self.stage = TOSS
         self.placed[2] = self.cup_pos(2)
         self.steps, self.events, self.fail_reason, self.release_distance = 0, [], None, None
+        self.misses, self.thumbs_steps = 0, 0
         self._phi = self._potential()
         return self._obs(), self._info(False)
 
@@ -144,7 +158,12 @@ class G1PyramidEnv(gym.Env):
         center = np.asarray(options.get("pyramid_center", cfg.pyramid_center)) + rng.uniform(-j, j, 2)
         yaw = options.get("pyramid_yaw", cfg.pyramid_yaw + rng.uniform(-0.15, 0.15))
         self.layout = PyramidLayout.make(center, yaw, cfg)
-        supply = [np.asarray(p) + rng.uniform(-j, j, 2) for p in options.get("supply", cfg.supply_cups)]
+        if "supply" in options or not cfg.random_layout:
+            supply = [np.asarray(p) + rng.uniform(-j, j, 2) for p in options.get("supply", cfg.supply_cups)]
+            cap_xy = np.asarray(options.get("cap", cfg.cap_spot)) + rng.uniform(-j, j, 2)
+        else:
+            supply, cap_xy = sample_layout(rng, self.layout, cfg)
+            cap_xy = np.asarray(options.get("cap", cap_xy))
 
         if stage is not None:
             self.stage = stage
@@ -165,8 +184,8 @@ class G1PyramidEnv(gym.Env):
                 z = T + (cfg.cup.height if START_ORIENTATIONS[k] is DOWN else 0.0)
                 pos = np.array([*supply[k], z])
             self._set_free(ids.cup_qpos[k], pos, ORIENTATIONS[k] if k < prebuilt else START_ORIENTATIONS[k])
-        cap_xy = np.asarray(options.get("cap", cfg.cap_spot)) + rng.uniform(-j, j, 2)
         self._set_free(ids.cap_qpos, [*cap_xy, T + cfg.cap_half_height + 0.001], UP)
+        self.pinch_posture = self._pinch_posture(cap_xy)
 
         for i in range(m.nu):
             d.ctrl[i] = d.qpos[m.jnt_qposadr[m.actuator_trnid[i, 0]]]
@@ -184,6 +203,7 @@ class G1PyramidEnv(gym.Env):
         self.placed = {k: self.cup_pos(k) for k in range(prebuilt)}
         self.cap_was_held = False
         self.release_distance = None
+        self.misses, self.thumbs_steps, self.cap_still = 0, 0, 0
         self.events: list[str] = []
         self.fail_reason = None
         self._phi = self._potential()
@@ -202,21 +222,28 @@ class G1PyramidEnv(gym.Env):
             # The top cup goes on the base cups wherever they actually ended up.
             mid = (self.cup_pos(0)[:2] + self.cup_pos(1)[:2]) / 2
             return np.array([*mid, self.layout.top[2]])
-        return self.cup_pos(2) + cup_axis(self.data, self.ids.cup_bodies[2]) * self.cfg.cup.height
+        if self.stage == TOSS:
+            return self.mouth
+        x, y, z = self.cfg.thumbs_up_spot
+        return np.array([x, y, self.cfg.table_height + z])
 
     def active_grasp_point(self) -> np.ndarray:
-        if self.stage == 3:
+        if self.stage == TOSS:
             return self.cap_pos
+        if self.stage == THUMBS_UP:
+            return self.stage_target()
         k = self.stage
         frac = self.cfg.top_grasp_height_frac if k == 2 else self.cfg.grasp_height_frac
         return cup_grasp_point(self.cup_pos(k), cup_axis(self.data, self.ids.cup_bodies[k]), frac, self.cfg)
 
     def active_object(self) -> np.ndarray:
-        return self.cap_pos if self.stage == 3 else self.cup_pos(self.stage)
+        if self.stage == THUMBS_UP:
+            return self.site_pos  # the hand itself goes to the spot
+        return self.cap_pos if self.stage == TOSS else self.cup_pos(self.stage)
 
     # ------------------------------------------------------------------ step
     def max_step(self) -> float:
-        return self.cfg.toss_max_step if self.stage == 3 else self.cfg.max_step
+        return self.cfg.toss_max_step if self.stage >= TOSS else self.cfg.max_step
 
     def step(self, action):
         a = np.clip(np.nan_to_num(np.asarray(action, dtype=np.float64)), -1.0, 1.0)
@@ -235,22 +262,23 @@ class G1PyramidEnv(gym.Env):
             self.cmd_mat = rotvec_to_mat(err * cfg.rot_leash / np.linalg.norm(err)) @ self.hand_mat
         self.grip = float(a[6])
         # Fingers move at a finite speed (a snap-open flings a light cup away); a throw needs a quick release.
-        close, open_ = (cfg.toss_grip_rate,) * 2 if self.stage == 3 else (cfg.grip_rate, cfg.release_rate)
+        close, open_ = (cfg.toss_grip_rate,) * 2 if self.stage == TOSS else (cfg.grip_rate, cfg.release_rate)
         self.hand_state += np.clip(self.grip - self.hand_state, -open_, close)
         # Interpolate the command over the control period so fast motions are tracked smoothly.
         n = cfg.ik_substeps
         rot = rotation_error(prev_mat, self.cmd_mat)
         # The hand takes the pinch shape for the cap only once it is above the pyramid: changing shape right
         # after letting go of the top cup would knock it with the fingers.
-        if self.stage == 3 and not self.pinch_ready:
+        if self.stage == TOSS and not self.pinch_ready:
             self.pinch_ready = self.site_pos[2] > cfg.table_height + 2 * cfg.cup.height + 0.05
-        pinch = self.stage == 3 and self.pinch_ready
+        pinch = self.stage == TOSS and self.pinch_ready
+        shape = "pinch" if pinch else "thumbs_up" if self.stage == THUMBS_UP else "wrap"
         self.controller.posture = self.pinch_posture if pinch else self.controller.home
         for i in range(1, n + 1):
             f = i / n
             self.controller.apply(self.data, prev_pos + f * (self.cmd_pos - prev_pos),
                                   rotvec_to_mat(f * rot) @ prev_mat, self.hand_state, cfg.control_dt / n,
-                                  pinch=pinch)
+                                  shape=shape)
             mujoco.mj_step(self.model, self.data, nstep=cfg.frame_skip // n)
         self.steps += 1
 
@@ -266,7 +294,7 @@ class G1PyramidEnv(gym.Env):
         terminated = failed
         if success:
             self.events.append(f"stage{self.stage}@{self.steps}")
-            if self.task == "full" and self.stage < 3:
+            if (self.task == "full" and self.stage < THUMBS_UP) or (self.task == "toss" and self.stage == TOSS):
                 self.stage += 1
                 self._phi = self._potential()
                 stage_done = False
@@ -309,7 +337,7 @@ class G1PyramidEnv(gym.Env):
             return self._fail("cap fell off the table")
         if not self._others_in_place():
             return self._fail("knocked a placed cup")
-        if self.stage < 3:
+        if self.stage < TOSS:
             k = self.stage
             body = ids.cup_bodies[k]
             # Cup A only fixes where the pyramid stands, so its tolerance is loose; the others are relative to it.
@@ -320,18 +348,34 @@ class G1PyramidEnv(gym.Env):
             else:
                 placed = top_cup_resting(d, ids.cup_bodies, cfg)
             still = np.linalg.norm(d.cvel[body][3:]) < 0.05
-            released = not self.hand_touches(ids.cup_geoms[k]) and self.grip < 0
+            # Let go, and the hand out of the way (backing the hand out of a top cup can still knock it over).
+            centre = self.cup_pos(k) + cup_axis(d, body) * cfg.cup.height / 2
+            released = not self.hand_touches(ids.cup_geoms[k]) and self.grip < 0 and \
+                np.linalg.norm(self.site_pos - centre) > 0.10
             if placed and still and released:
                 self.placed[k] = self.cup_pos(k)
                 return True, False
             return False, False
-        # Toss.
         in_cup = cap_in_cup(d, ids.cap_body, ids.cup_bodies[2], cfg.cap_radius, cfg)
+        if self.stage == THUMBS_UP:
+            if not in_cup:
+                return self._fail("cap came out of the cup")
+            clear = np.linalg.norm(self.site_pos - self.mouth) > 0.12
+            shown = self.grip > 0 and self.hand_state > 0.8 and self.thumb_up > cfg.thumbs_up_min_tilt and clear
+            self.thumbs_steps = self.thumbs_steps + 1 if shown else 0
+            return self.thumbs_steps * cfg.control_dt >= cfg.thumbs_up_hold, False
+        # Toss.
         if in_cup and pyramid_standing(d, ids.cup_bodies, cfg):
             far_enough = self.release_distance is not None and self.release_distance >= cfg.min_throw_distance
             return (True, False) if far_enough else self._fail("cap dropped in from too close")
-        if self.release_distance is not None and self.cap_pos[2] < T + 0.03:
-            return self._fail("cap missed the cup")
+        # A miss: once the thrown cap has come to rest outside the cup, it can be picked up and thrown again.
+        if self.release_distance is not None and not self.hand_touches({ids.cap_geom}):
+            slow = np.linalg.norm(d.qvel[ids.cap_dof:ids.cap_dof + 3]) < 0.03
+            self.cap_still = self.cap_still + 1 if slow else 0
+            if self.cap_still >= 3:
+                self.misses += 1
+                self.events.append(f"miss@{self.steps}")
+                self.release_distance, self.cap_was_held, self.cap_still = None, False, 0
         return False, False
 
     def _fail(self, reason: str) -> tuple[bool, bool]:
@@ -343,7 +387,11 @@ class G1PyramidEnv(gym.Env):
         cap thrown towards the mouth)."""
         to_obj = np.linalg.norm(self.active_grasp_point() - self.site_pos)
         r = 0.2 * (1 - np.tanh(8 * to_obj))
-        if self.stage < 3:
+        if self.stage == THUMBS_UP:
+            shape = max(0.0, (self.hand_state + 1) / 2) * max(0.0, self.thumb_up)
+            hold = min(1.0, self.thumbs_steps * self.cfg.control_dt / self.cfg.thumbs_up_hold)
+            return float(r + 0.4 * shape + 0.4 * hold)
+        if self.stage < TOSS:
             k = self.stage
             holding = self.hand_touches(self.ids.cup_geoms[k]) and self.grip > 0
             if holding:
@@ -365,7 +413,7 @@ class G1PyramidEnv(gym.Env):
         cups = np.concatenate([np.concatenate([self.cup_pos(k), cup_axis(d, ids.cup_bodies[k])]) for k in range(3)])
         cap_vel = d.qvel[ids.cap_dof:ids.cap_dof + 3]
         stage = np.zeros(N_STAGES)
-        stage[min(self.stage, 3)] = 1.0
+        stage[self.stage] = 1.0
         target = self.stage_target()
         obs = np.concatenate([
             d.qpos[ids.arm_qpos], d.qvel[ids.arm_dofs] * 0.1, d.qpos[ids.hand_qpos],
@@ -377,7 +425,7 @@ class G1PyramidEnv(gym.Env):
 
     def _info(self, success: bool) -> dict:
         return {"is_success": bool(success), "stage": int(self.stage), "events": list(self.events),
-                "release_distance": self.release_distance, "fail_reason": self.fail_reason}
+                "release_distance": self.release_distance, "fail_reason": self.fail_reason, "misses": self.misses}
 
     def render(self):
         if self._renderer is None:

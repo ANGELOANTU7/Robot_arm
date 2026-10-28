@@ -4,15 +4,17 @@ import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.controller import pinch_frame, rotation_error, rotvec_to_mat, site_for_pinch
-from robot_arm.humanoid.envs import (OBS_CAP, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE, OBS_STAGE,
-                                     OBS_TARGET, obs_cup)
-from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point
+from robot_arm.humanoid.envs import (OBS_CAP, OBS_CAP_VEL, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE,
+                                     OBS_STAGE, OBS_TARGET, THUMBS_UP, TOSS, obs_cup)
+from robot_arm.humanoid.objects import (ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point,
+                                        reach_heading)
 
 GRAVITY = 9.81
 OPEN_STEPS = 3  # control steps to open the hand fully (see release_rate)
 BACK_OFF = 0.16  # how far the open hand slides back out of a released top cup (the fingertips reach ~11 cm past it)
 FLIP_ROLL = np.pi  # turning a held cup over: roll the hand about its fingers' axis (forearm rotation)
 FLIP_RELEASE = -1.0  # grip while letting go of a cup with the hand turned over
+THUMBS_UP_YAW = -0.3  # heading of the fist while showing the thumbs-up
 
 
 def hand_frame(yaw: float, palm_dir: np.ndarray | None = None) -> np.ndarray:
@@ -86,17 +88,23 @@ class PlaceExpert:
     placed mouth-up. It is left by sliding the loosened hand back out along the fingers before rising: rising
     straight up would drag it by its widening walls."""
 
-    def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float = 0.0, pre_dist: float = 0.16, drop: float = 0.003,
+    def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float | None = None, place_yaw: float = 0.0,
+                 top_place_yaw: float = 0.0, pre_dist: float = 0.16, drop: float = 0.014,
                  flip_taper_sign: float = -1.0, flip_wait: int = 0, flip_exit_rise: float = 0.0,
-                 flip_exit_speed: float = 1.0):
+                 flip_exit_speed: float = 1.0, flip_offset: float = 0.012, flip_exit_out: float | None = 0.5):
+        """`yaw`: hand heading for the grasp (None: away from the shoulder, towards the cup); `place_yaw` and
+        `top_place_yaw`: heading while putting a base cup / the top cup down (the hand turns while carrying)."""
         self.cfg, self.yaw, self.pre_dist, self.drop = cfg, yaw, pre_dist, drop
+        self.place_yaw, self.top_place_yaw = place_yaw, top_place_yaw
         self.flip_taper_sign, self.flip_wait = flip_taper_sign, flip_wait
         self.flip_exit_rise, self.flip_exit_speed = flip_exit_rise, flip_exit_speed
+        self.flip_offset, self.flip_exit_out = flip_offset, flip_exit_out
         self.reset()
 
     def reset(self):
         self.phase, self.timer, self.stage = "rise", 0, None
         self.flip, self.flipped, self.R_hold = None, False, None
+        self.yaw_g = self.yaw_p = None
         self.z_hist = []
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
@@ -107,19 +115,24 @@ class PlaceExpert:
             self.stage = stage
         k = stage
         T, h = cfg.table_height, cfg.cup.height
-        xh = hand_frame(self.yaw)[:, 0]
         site = obs[OBS_SITE]
         cup_pos, cup_axis = obs_cup(obs, k)
         final_up = ORIENTATIONS[k] is UP
         if self.flip is None:
             self.flip = bool(final_up and cup_axis[2] < 0)
+            self.yaw_g = reach_heading(cup_pos, cfg) if self.yaw is None else self.yaw
+            self.yaw_p = self.top_place_yaw if k == 2 else self.place_yaw
+        xh, xh_p = hand_frame(self.yaw_g)[:, 0], hand_frame(self.yaw_p)[:, 0]
         if self.flip:
             # The palm lies along the cup's sloping wall as it will once the cup is turned over (mirror of a
-            # mouth-up grasp), then the hand rolls half a turn.
-            R_grasp = hand_frame(self.yaw) @ roll_x(self.flip_taper_sign * taper_angle(cfg))
-            R_place = R_grasp @ roll_x(FLIP_ROLL)
+            # mouth-up grasp), then the hand rolls half a turn. A cup is round, so turning the hand about the
+            # vertical in between (to the placing heading) doesn't change how it ends up.
+            taper = roll_x(self.flip_taper_sign * taper_angle(cfg))
+            R_grasp = hand_frame(self.yaw_g) @ taper
+            R_place = hand_frame(self.yaw_p) @ taper @ roll_x(FLIP_ROLL)
         else:
-            R_grasp = R_place = grasp_frame(self.yaw, final_up, cfg)
+            R_grasp = grasp_frame(self.yaw_g, final_up, cfg)
+            R_place = grasp_frame(self.yaw_p, final_up, cfg)
         R = R_place if self.flipped else R_grasp
         final_frac = cfg.top_grasp_height_frac if k == 2 else cfg.grasp_height_frac
         # Grip height from the cup's table side as it stands now: the same spot on the cup before and after a flip.
@@ -128,6 +141,9 @@ class PlaceExpert:
         target = obs[OBS_TARGET]
         final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[k] is UP else np.array([0, 0, -1.0])
         target_tp = cup_table_point(target, final_axis, cfg)  # where the cup's table-side end must go
+        if self.flip:  # let go of it a little towards the palm: the opening hand pushes it away from the palm
+            palm = R_place[:, 1] * np.array([1.0, 1.0, 0.0])
+            target_tp = target_tp - self.flip_offset * palm / max(np.linalg.norm(palm), 1e-6)
         safe_z = T + 0.30
         # High enough that the held cup (hanging frac * h below the hand) clears cups standing on the table.
         carry_z = T + h + final_frac * h + 0.04
@@ -160,15 +176,17 @@ class PlaceExpert:
         if self.phase == "lift":
             goal, grip = np.array([site[0], site[1], flip_z if self.flip else carry_z]), 1.0
             if near(goal, 0.015):
-                self.phase = "to_flip" if self.flip else "carry"
-        if self.phase == "to_flip":  # carried upright to above the pyramid, where the arm can roll the hand over
-            goal, grip = np.array([target[0] - 0.03, target[1], flip_z]), 1.0
-            if near(goal, 0.02):
-                self.phase = "flip"
-        if self.phase == "flip":
-            goal, grip, R = np.array([target[0] - 0.03, target[1], flip_z]), 1.0, R_place
-            if np.linalg.norm(rotation_error(obs_hand_mat(obs), R_place)) < 0.08:
-                self.phase, self.flipped = "carry", True
+                self.phase, self.timer = ("to_flip" if self.flip else "carry"), 0
+        flip_at = np.array([*(target[:2] - 0.03 * xh_p[:2]), flip_z])
+        if self.phase == "to_flip":  # carried mouth-down to above the pyramid, turning to the placing heading
+            goal, grip, R = flip_at, 1.0, hand_frame(self.yaw_p) @ taper
+            if near(goal, 0.02) and np.linalg.norm(rotation_error(obs_hand_mat(obs), R)) < 0.1:
+                self.phase, self.timer = "flip", 0
+        if self.phase == "flip":  # then roll the hand over about its fingers' axis
+            goal, grip, R = flip_at, 1.0, R_place
+            err = np.linalg.norm(rotation_error(obs_hand_mat(obs), R_place))
+            if err < 0.08 or (self.timer > 25 and err < 0.2):  # or as close as the joint limits allow
+                self.phase, self.flipped, self.timer = "carry", True, 0
         # From here on, servo the held cup's table-side end (not the hand) onto the target, so slip and tilt in
         # the grasp are corrected: the hand turns so the cup's axis is upright whatever its tilt in the grip.
         if self.phase in ("carry", "lower") and (self.flipped or not self.flip):
@@ -179,7 +197,8 @@ class PlaceExpert:
         cup_offset = site - cup_tp
         if self.phase == "carry":
             goal, grip = np.array([*(target_tp[:2] + cup_offset[:2]), carry_z]), 1.0
-            if np.linalg.norm(cup_tp[:2] - target_tp[:2]) < 0.006:
+            off = np.linalg.norm(cup_tp[:2] - target_tp[:2])
+            if off < 0.006 or (self.timer > 20 and off < 0.012):
                 self.phase = "lower"
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
@@ -190,7 +209,7 @@ class PlaceExpert:
             stalled = len(self.z_hist) > 3 and self.z_hist[-4] - self.z_hist[-1] < 0.002
             above = cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2]
             if (self.flipped and ((above < 0.025 and stalled) or above < self.drop)) or \
-                    (not self.flipped and above < 0.003):
+                    (not self.flipped and (above < 0.003 or (above < 0.012 and stalled))):
                 self.phase, self.timer = "open", 0
         # A hand turned over has its thumb underneath: opening it all the way would swing the thumb into a base
         # cup, so it only loosens its grip until it is out of the cup.
@@ -200,7 +219,10 @@ class PlaceExpert:
             if self.timer > OPEN_STEPS + (self.flip_wait if self.flipped else 0):  # fully open (see release_rate)
                 self.phase, self.back_from = ("back" if k == 2 else "up"), site.copy()
         if self.phase == "back":
-            exit_dir = -xh + (np.array([0, 0, self.flip_exit_rise]) if self.flipped else 0.0)
+            exit_dir = -xh_p + (np.array([0, 0, self.flip_exit_rise]) if self.flipped else 0.0)
+            if self.flipped and self.flip_exit_out is not None:  # up, and out along the cup's sloping wall
+                palm = R_place[:, 1] * np.array([1.0, 1.0, 0.0])
+                exit_dir = np.array([0, 0, 1.0]) - self.flip_exit_out * palm / max(np.linalg.norm(palm), 1e-6)
             goal, grip = self.back_from + BACK_OFF * exit_dir / np.linalg.norm(exit_dir), loosen
             if self.flipped:
                 speed_back = self.flip_exit_speed * cfg.max_step
@@ -223,14 +245,17 @@ class TossExpert:
 
     `release_bearing` turns the release point away from the base cups' axis (0: straight along it, from B's
     side); `release_dist` and `release_height` place the cap at release relative to the mouth.
+
+    A miss: once the cap lies still, it is picked up where it landed and thrown again, aimed off by however far
+    the last throw passed from the mouth (`correction` of it). Once it is in: a thumbs-up beside the shoulder.
     """
 
     # Defaults from a parameter sweep with the aim calibrated over random layouts (see the README).
     def __init__(self, cfg: G1TaskConfig = G1_CFG, flight_time: float = 0.30, release_dist: float = 0.12,
                  release_height: float = 0.08, release_bearing: float = 0.05, windup: float = 0.18,
                  speed_gain: float = 1.0, aim_offset=(0.0, 0.0, 0.0), carry_time: float = 0.05,
-                 close_steps: int = 6, pinch_depth: float = 0.008):
-        self.cfg = cfg
+                 close_steps: int = 6, pinch_depth: float = 0.008, correction: float = 0.8):
+        self.cfg, self.correction = cfg, correction
         self.flight_time, self.release_dist, self.release_height = flight_time, release_dist, release_height
         self.release_bearing, self.windup, self.speed_gain = release_bearing, windup, speed_gain
         self.aim_offset = np.asarray(aim_offset, float)
@@ -240,6 +265,16 @@ class TossExpert:
     def reset(self):
         self.phase, self.timer = "rise", 0
         self.plan, self.aimed, self.retries = None, False, 0
+        self.attempt, self.aim = 0, np.zeros(3)
+        self.miss, self.still = None, 0
+
+    def next_attempt(self):
+        """After a miss: aim off by the miss, and go and pick the cap up again."""
+        if self.miss is not None:
+            self.aim = self.aim - self.correction * np.array([*self.miss, 0.0])
+        attempt, aim = self.attempt + 1, self.aim
+        self.reset()
+        self.attempt, self.aim = attempt, aim
 
     @staticmethod
     def base_axis(obs: np.ndarray) -> np.ndarray:
@@ -254,17 +289,39 @@ class TossExpert:
         side = np.array([c * axis[0] - s * axis[1], s * axis[0] + c * axis[1], 0.0])
         R = mouth + self.release_dist * side + [0, 0, self.release_height]
         t = self.flight_time
-        v = (mouth + self.aim_offset - R + np.array([0, 0, 0.5 * GRAVITY * t * t])) / t
+        v = (mouth + self.aim_offset + self.aim - R + np.array([0, 0, 0.5 * GRAVITY * t * t])) / t
         return R, v
 
     pinch_frame = staticmethod(pinch_frame)
     site_for = staticmethod(site_for_pinch)
+
+    def thumbs_up(self, obs: np.ndarray) -> np.ndarray:
+        """Over to the spot beside the shoulder, turning the hand thumb-side up, then close the fist."""
+        cfg = self.cfg
+        site, spot = obs[OBS_SITE], obs[OBS_TARGET]
+        R = hand_frame(THUMBS_UP_YAW) @ roll_x(np.pi / 2)
+        goal = np.array([spot[0], spot[1], max(spot[2], site[2])]) if site[2] < spot[2] - 0.02 else spot
+        err = np.linalg.norm(rotation_error(obs_hand_mat(obs), R))
+        if np.linalg.norm(spot - site) < 0.03 and err < 0.15:
+            self.phase = "thumbs_up"
+        grip = 1.0 if self.phase == "thumbs_up" else -1.0
+        return to_action(obs, goal, R, grip, cfg.toss_max_step, cfg, speed=0.03)
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg = self.cfg
         T = cfg.table_height
         site, cap = obs[OBS_SITE], obs[OBS_CAP]
         mouth = obs[OBS_TARGET]
+        if int(np.argmax(obs[OBS_STAGE])) == THUMBS_UP:
+            return self.thumbs_up(obs)
+        if self.phase == "release":
+            # Where the cap passes the mouth's height on its way down (for the next aim), and whether it lies still.
+            vel = obs[OBS_CAP_VEL]
+            if self.miss is None and vel[2] < 0 and cap[2] < mouth[2]:
+                self.miss = cap[:2] - mouth[:2]
+            self.still = self.still + 1 if np.linalg.norm(vel) < 0.03 else 0
+            if self.still > 4:
+                self.next_attempt()
         if self.plan is None:
             self.plan = self.release_plan(mouth, self.base_axis(obs))
         R_pt, v = self.plan
@@ -287,7 +344,7 @@ class TossExpert:
         # would sweep the fingers into the top cup.
         above_cap = self.site_for(pinch_at_cap, frame)
         above_cap[2] = max(safe_z, site[2]) if self.phase in ("rise", "traverse", "turn") else safe_z
-        if self.phase == "rise" and self.timer == 1 and site[2] < safe_z - 0.05:
+        if self.phase == "rise" and self.timer == 1 and site[2] < safe_z - 0.05 and self.attempt == 0:
             # Right after letting go of the top cup the hand is still around it: slide out along the fingers first.
             self.phase, self.back_from = "back", site.copy()
         if self.phase == "back":
@@ -299,8 +356,12 @@ class TossExpert:
             if site[2] > safe_z - 0.03:
                 self.phase = "traverse"
         if self.phase == "traverse":
-            goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), hand
-            if np.linalg.norm(goal[:2] - site[:2]) < 0.03:
+            # Upright on the way (after turning the top cup over, the hand is upside down): turning from there
+            # straight to the pinch runs the wrist into its limits.
+            upright = hand_frame(float(np.arctan2(hand[1, 0], hand[0, 0])))
+            goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), upright
+            if np.linalg.norm(goal[:2] - site[:2]) < 0.03 and \
+                    np.linalg.norm(rotation_error(hand, upright)) < 0.3:
                 self.phase = "turn"
         if self.phase == "turn":
             goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), frame
@@ -363,4 +424,4 @@ class TossExpert:
 
 
 def expert_for(obs: np.ndarray, place: PlaceExpert, toss: TossExpert):
-    return toss if int(np.argmax(obs[OBS_STAGE])) == 3 else place
+    return toss if int(np.argmax(obs[OBS_STAGE])) >= TOSS else place
