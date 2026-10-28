@@ -8,6 +8,8 @@ third_party/
 
 # Your recordings and everything derived from them
 data/videos/
+data/videos_pyramid/
+data/videos_pyramid_raw/
 data/processed/
 runs/
 
