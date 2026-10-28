@@ -9,10 +9,10 @@ from robot_arm.humanoid.envs import (OBS_CAP, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND
 from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point
 
 GRAVITY = 9.81
-OPEN_STEPS = 14
+OPEN_STEPS = 3  # control steps to open the hand fully (see release_rate)
 BACK_OFF = 0.16  # how far the open hand slides back out of a released top cup (the fingertips reach ~11 cm past it)
 FLIP_ROLL = np.pi  # turning a held cup over: roll the hand about its fingers' axis (forearm rotation)
-FLIP_RELEASE = -0.2  # grip while letting go of a cup with the hand turned over: loosened, not wide open
+FLIP_RELEASE = -1.0  # grip while letting go of a cup with the hand turned over
 
 
 def hand_frame(yaw: float, palm_dir: np.ndarray | None = None) -> np.ndarray:
@@ -35,11 +35,15 @@ def roll_x(angle: float) -> np.ndarray:
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
 
 
+def taper_angle(cfg: G1TaskConfig = G1_CFG) -> float:
+    """Slope of a cup's wall from the vertical."""
+    return float(np.arctan2(cfg.cup.mouth_radius - cfg.cup.bottom_radius, cfg.cup.height))
+
+
 def grasp_frame(yaw: float, mouth_up: bool, cfg: G1TaskConfig = G1_CFG) -> np.ndarray:
     """Hand orientation for a side grasp. A mouth-up cup widens upwards, so the hand rolls by the wall's slope
     to keep the flat palm parallel to the wall (a vertical palm would press the upper rim and tip the cup)."""
-    taper = np.arctan2(cfg.cup.mouth_radius - cfg.cup.bottom_radius, cfg.cup.height)
-    return hand_frame(yaw) @ roll_x(taper if mouth_up else 0.0)
+    return hand_frame(yaw) @ roll_x(taper_angle(cfg) if mouth_up else 0.0)
 
 
 def upright_hand(R_nominal: np.ndarray, hand: np.ndarray, cup_axis: np.ndarray, want: np.ndarray) -> np.ndarray:
@@ -82,13 +86,18 @@ class PlaceExpert:
     placed mouth-up. It is left by sliding the loosened hand back out along the fingers before rising: rising
     straight up would drag it by its widening walls."""
 
-    def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float = 0.0, pre_dist: float = 0.16):
-        self.cfg, self.yaw, self.pre_dist = cfg, yaw, pre_dist
+    def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float = 0.0, pre_dist: float = 0.16, drop: float = 0.003,
+                 flip_taper_sign: float = -1.0, flip_wait: int = 0, flip_exit_rise: float = 0.0,
+                 flip_exit_speed: float = 1.0):
+        self.cfg, self.yaw, self.pre_dist, self.drop = cfg, yaw, pre_dist, drop
+        self.flip_taper_sign, self.flip_wait = flip_taper_sign, flip_wait
+        self.flip_exit_rise, self.flip_exit_speed = flip_exit_rise, flip_exit_speed
         self.reset()
 
     def reset(self):
         self.phase, self.timer, self.stage = "rise", 0, None
         self.flip, self.flipped, self.R_hold = None, False, None
+        self.z_hist = []
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -104,8 +113,13 @@ class PlaceExpert:
         final_up = ORIENTATIONS[k] is UP
         if self.flip is None:
             self.flip = bool(final_up and cup_axis[2] < 0)
-        R_grasp = grasp_frame(self.yaw, final_up and not self.flip, cfg)
-        R_place = R_grasp @ roll_x(FLIP_ROLL) if self.flip else R_grasp
+        if self.flip:
+            # The palm lies along the cup's sloping wall as it will once the cup is turned over (mirror of a
+            # mouth-up grasp), then the hand rolls half a turn.
+            R_grasp = hand_frame(self.yaw) @ roll_x(self.flip_taper_sign * taper_angle(cfg))
+            R_place = R_grasp @ roll_x(FLIP_ROLL)
+        else:
+            R_grasp = R_place = grasp_frame(self.yaw, final_up, cfg)
         R = R_place if self.flipped else R_grasp
         final_frac = cfg.top_grasp_height_frac if k == 2 else cfg.grasp_height_frac
         # Grip height from the cup's table side as it stands now: the same spot on the cup before and after a flip.
@@ -170,18 +184,28 @@ class PlaceExpert:
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
             goal[2] = max(goal[2], site[2] - cfg.max_step)  # come down gently
-            if cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2] < 0.003:  # touched down
+            # Touched down. A cup held with the hand turned over is let go as soon as it stops sinking: a finger
+            # may rest on a base cup's top before the cup is fully down, and the cup drops the rest of the way.
+            self.z_hist.append(cup_pos[2])
+            stalled = len(self.z_hist) > 3 and self.z_hist[-4] - self.z_hist[-1] < 0.002
+            above = cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2]
+            if (self.flipped and ((above < 0.025 and stalled) or above < self.drop)) or \
+                    (not self.flipped and above < 0.003):
                 self.phase, self.timer = "open", 0
         # A hand turned over has its thumb underneath: opening it all the way would swing the thumb into a base
         # cup, so it only loosens its grip until it is out of the cup.
         loosen = FLIP_RELEASE if self.flipped else -1.0
         if self.phase == "open":
             goal, grip = site, loosen
-            if self.timer > OPEN_STEPS:  # fully open (see release_rate)
+            if self.timer > OPEN_STEPS + (self.flip_wait if self.flipped else 0):  # fully open (see release_rate)
                 self.phase, self.back_from = ("back" if k == 2 else "up"), site.copy()
         if self.phase == "back":
-            goal, grip = self.back_from - BACK_OFF * xh, loosen
-            if near(goal, 0.01):
+            exit_dir = -xh + (np.array([0, 0, self.flip_exit_rise]) if self.flipped else 0.0)
+            goal, grip = self.back_from + BACK_OFF * exit_dir / np.linalg.norm(exit_dir), loosen
+            if self.flipped:
+                speed_back = self.flip_exit_speed * cfg.max_step
+                goal = site + np.clip(goal - site, -speed_back, speed_back)
+            if near(self.back_from + BACK_OFF * exit_dir / np.linalg.norm(exit_dir), 0.01):
                 self.phase = "up"
         if self.phase == "up":
             goal = np.array([site[0], site[1], safe_z])

@@ -14,6 +14,7 @@ import imageio.v2 as imageio
 import numpy as np
 
 from robot_arm.video.calibrate import Camera, calibrate
+from robot_arm.video.cups import cup_centre, long_axis, two_cup_centres
 from robot_arm.video.process import HAND_EDGES, read_video
 from robot_arm.video.skills import Props, SkillDemo, SkillTrack, reconstruct_skill
 from robot_arm.video.tracking import HandTracker, color_mask, detect_blob
@@ -43,101 +44,71 @@ def largest_component(mask: np.ndarray, min_area: int = 200) -> np.ndarray | Non
     return labels == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
 
 
-def lowest_px(blob: np.ndarray) -> np.ndarray:
-    """Lowest pixel of a blob at its centroid column (a standing cup: its rim point nearest the camera)."""
-    ys, xs = np.nonzero(blob)
-    cx = xs.mean()
-    col = np.abs(xs - cx) < 2.0
-    return np.array([cx, ys[col].max() if col.any() else ys.max()], float)
-
-
-def rim_px(blob: np.ndarray, top_frac: float = 0.25) -> np.ndarray:
-    """The top cup's mouth: the centre of the widest row in the top part of the pyramid's blob. A mouth-up cup's
-    red wall is widest just under its white lip, at the ends of the rim, level with the mouth's centre."""
-    ys, xs = np.nonzero(blob)
-    top, bottom = ys.min(), ys.max()
-    best, row = -1, top
-    for y in range(top, top + max(3, int(top_frac * (bottom - top))) + 1):
-        cols = xs[ys == y]
-        if len(cols) and cols.max() - cols.min() > best + 1:  # ties go to the higher row
-            best, row = cols.max() - cols.min(), y
-    cols = xs[ys == row]
-    return np.array([(cols.min() + cols.max()) / 2, row], float)
-
-
-def base_pair_px(blob: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
-    """Lowest pixels of two mouth-down cups standing side by side (one blob): the two low points of its bottom
-    edge, with a notch between them where the rims meet. None if there aren't two."""
-    ys, xs = np.nonzero(blob)
-    cols = np.arange(xs.min(), xs.max() + 1)
-    bottom = np.full(len(cols), -np.inf)
-    np.maximum.at(bottom, xs - xs.min(), ys)
-    bottom = np.convolve(bottom, np.ones(5) / 5, mode="same")
-    i1 = int(np.argmax(bottom[2:-2])) + 2
-    away = np.abs(np.arange(len(cols)) - i1) > 0.25 * len(cols)
-    if not away[2:-2].any():
-        return None
-    i2 = int(np.argmax(np.where(away, bottom, -np.inf)[2:-2])) + 2
-    lo, hi = sorted((i1, i2))
-    near = bottom[max(2, i2 - 4):i2 + 5]
-    if bottom[i2] < near.max() - 0.5 or bottom[lo:hi + 1].min() > min(bottom[i1], bottom[i2]) - 3:
-        return None  # i2 is only the slope down to i1, or there is no notch between them
-    pts = []
-    for i in sorted((i1, i2)):
-        c = cols[i]
-        pts.append(np.array([c, ys[np.abs(xs - c) < 2.0].max()], float))
-    return pts[0], pts[1]
-
-
 def still_mask(frames: list[np.ndarray], color: str) -> np.ndarray:
     """Pixels of the color in most of the given (still) frames."""
     votes = sum((color_mask(f, color) > 0).astype(np.int32) for f in frames)
     return votes * 2 > len(frames)
 
 
-def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillColors) -> SkillTrack:
-    """Hand landmarks per frame, the moved cup's lowest pixel (place) or the cap's centre (toss), and the marks
-    from the still frames at the start and end (see SkillTrack)."""
+def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillColors, camera: Camera,
+                props: Props = Props(), hands: dict | None = None) -> SkillTrack:
+    """Hand landmarks per frame (or `hands`, cached: hand_px, hand_world), the moved cup's blob centre (place) or
+    the cap's centre (toss), and the marks from the still frames at the start and end (see SkillTrack)."""
     T = len(frames)
     still = max(3, int(0.3 * fps))
     first, last = still_mask(frames[:still], colors.cups), still_mask(frames[-still:], colors.cups)
-    marks = {}
+    marks, in_cup_px, static = {}, None, None
     kernel = np.ones((7, 7), np.uint8)
+    on_table = lambda c: None if c is None else np.array([c[0], c[1], 0.0])  # noqa: E731
     if skill == "toss":
         pyramid = largest_component(first)
         if pyramid is None:
             raise RuntimeError("No cups found in the first frames; check the cup color (--check).")
-        marks["rim"] = rim_px(pyramid)
-        static = None
+        marks["axis"] = long_axis(pyramid, camera)
+        ys, xs = np.nonzero(pyramid)
+        in_cup_px = cv2.convexHull(np.column_stack([xs, ys]).astype(np.int32))[:, 0, :].astype(float)
     else:
         static = cv2.dilate((first & last).astype(np.uint8), kernel) > 0
         start = largest_component(cv2.morphologyEx((first & ~last).astype(np.uint8), cv2.MORPH_OPEN, kernel))
         end = largest_component(cv2.morphologyEx((last & ~first).astype(np.uint8), cv2.MORPH_OPEN, kernel))
+        # All cups start mouth-down: their outline is the mouth on the table.
         if start is not None:
-            marks["start"] = lowest_px(start)
+            marks["start"] = on_table(cup_centre(start, camera, props.lip, props.mouth_radius))
         if skill == "place_base" and end is not None:
-            marks["end"] = lowest_px(end)
-        pyramid = largest_component(first & last) if skill == "place_top" else None  # the two base cups
-        if skill == "place_top" and end is not None:
-            full = largest_component(last)
-            if full is not None and (full & end).any():
-                marks["rim"] = rim_px(full)
-    if pyramid is not None and (pair := base_pair_px(pyramid)) is not None:
-        marks["base_a"], marks["base_b"] = pair
+            marks["end"] = on_table(cup_centre(end, camera, props.lip, props.mouth_radius))
+        if skill == "place_top":
+            moved = cv2.dilate(start.astype(np.uint8), kernel) > 0 if start is not None else np.zeros_like(first)
+            bases = largest_component(first & ~moved)
+            pair = two_cup_centres(bases, camera, props.lip, props.mouth_radius) if bases is not None else None
+            if pair is not None:
+                a, b = (on_table(c) for c in pair)
+                marks["base_a"], marks["base_b"] = a, b
+                mid = (a + b) / 2
+                marks["end"] = mid + [0, 0, props.top_bottom_z]  # the top cup's base on the pyramid
+                marks["mouth"] = mid + [0, 0, props.top_bottom_z + props.cup_height]
+                marks["axis"] = (b - a) / np.linalg.norm(b - a)
 
+    # The cap's expected size in the image, to tell it from other blue things (a mat, a pen).
+    ends = camera.project(np.array([[0.0, 0, 0], [0.01, 0, 0]]))
+    px_per_m = float(np.linalg.norm(ends[1] - ends[0]) * 100)
+    cap_area = np.pi * (props.cap_radius * px_per_m) ** 2
     hand_px = np.full((T, 21, 2), np.nan)
     hand_world = np.full((T, 21, 3), np.nan)
+    if hands is not None:
+        hand_px[:], hand_world[:] = hands["hand_px"][:T], hands["hand_world"][:T]
     obj_px = np.full((T, 2), np.nan)
     obj_r = np.full(T, np.nan)
-    tracker = HandTracker()
+    tracker = HandTracker() if hands is None else None
     last_cap, missing = None, 0
     for i, frame in enumerate(frames):
-        det = tracker(frame, int(round(i * 1000 / fps)))
-        if det is not None:
-            hand_px[i], hand_world[i] = det.image_px, det.world_m
+        if tracker is not None:
+            det = tracker(frame, int(round(i * 1000 / fps)))
+            if det is not None:
+                hand_px[i], hand_world[i] = det.image_px, det.world_m
         if skill == "toss":
             near = last_cap if missing < int(0.1 * fps) else None  # search everywhere after losing it
-            cap = detect_blob(frame, colors.cap, near=near, max_jump=0.12 * frame.shape[1], compact=True)
+            cap = detect_blob(frame, colors.cap, min_area=0.2 * cap_area, max_area=4 * cap_area, near=near,
+                              max_jump=0.12 * frame.shape[1], compact=True)
             if cap is not None:
                 obj_px[i], obj_r[i], last_cap, missing = cap.center, cap.radius, cap.center, 0
             else:
@@ -146,21 +117,23 @@ def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillC
             moving = ((color_mask(frame, colors.cups) > 0) & ~static).astype(np.uint8) * 255
             cup = detect_blob(frame, colors.cups, min_area=300, mask=moving)
             if cup is not None:
-                obj_px[i], obj_r[i] = cup.bottom, cup.radius
-    tracker.close()
-    return SkillTrack(np.arange(T) / fps, hand_px, hand_world, obj_px, obj_r, marks)
+                obj_px[i], obj_r[i] = cup.center, cup.radius
+    if tracker is not None:
+        tracker.close()
+    return SkillTrack(np.arange(T) / fps, hand_px, hand_world, obj_px, obj_r, marks, in_cup_px)
 
 
 def process_skill_video(path: str | Path, out_dir: str | Path, skill: str | None = None,
                         colors: SkillColors = SkillColors(), props: Props = Props(), marker_mm: float = 50.0,
-                        focal_px: float | None = None, hfov_deg: float | None = None,
-                        debug: bool = True) -> tuple[SkillDemo, dict]:
+                        focal_px: float | None = None, hfov_deg: float | None = None, debug: bool = True,
+                        hands: dict | None = None) -> tuple[SkillDemo, dict]:
+    """`hands`: hand landmarks tracked earlier for this clip (hand_px, hand_world), to skip MediaPipe."""
     path, out_dir = Path(path), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     skill = skill or skill_from_name(path)
     frames, fps = read_video(path)
     camera, calib_info = calibrate(frames[: int(fps)], marker_mm=marker_mm, focal_px=focal_px, hfov_deg=hfov_deg)
-    track = track_skill(frames, fps, skill, colors)
+    track = track_skill(frames, fps, skill, colors, camera, props, hands)
     demo = reconstruct_skill(track, camera, skill, props)
     demo.info.update({f"calib_{k}": float(v) for k, v in calib_info.items() if isinstance(v, (int, float))})
     demo.save(out_dir / f"{path.stem}.npz")
@@ -181,6 +154,7 @@ def save_skill_overlay(frames, track: SkillTrack, demo: SkillDemo, camera: Camer
     palm_px = camera.project(demo.palm)
     axes = camera.project(np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]]))
     start_px, end_px = camera.project(demo.obj_start)[0], camera.project(demo.obj_end)[0]
+    marks_px = {k: camera.project(np.asarray(v))[0] for k, v in track.marks.items() if k != "axis"}
     flight_px = None
     if demo.skill == "toss":
         dt = np.linspace(0, 0.5, 40)[:, None]
@@ -193,9 +167,11 @@ def save_skill_overlay(frames, track: SkillTrack, demo: SkillDemo, camera: Camer
             cv2.line(img, _pt(axes[0]), _pt(axes[k]), color, 2)
         cv2.drawMarker(img, _pt(start_px), (255, 255, 255), cv2.MARKER_CROSS, 16, 2)
         cv2.drawMarker(img, _pt(end_px), (0, 255, 255), cv2.MARKER_TILTED_CROSS, 16, 2)
-        for name, p in track.marks.items():
-            cv2.circle(img, _pt(p), 4, (255, 255, 0), -1)
-            cv2.putText(img, name, _pt(p + [6, -6]), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+        for name, p in marks_px.items():
+            cv2.circle(img, _pt(p), 5, (255, 255, 0), -1)
+            cv2.putText(img, name, _pt(p + [6, -6]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        if track.in_cup_px is not None:
+            cv2.polylines(img, [track.in_cup_px.astype(np.int32)], True, (255, 255, 0), 1)
         if flight_px is not None and demo.t[min(i, len(demo.t) - 1)] >= demo.t_release:
             cv2.polylines(img, [flight_px], False, (0, 140, 255), 2)
         if not np.isnan(track.obj_px[i, 0]):

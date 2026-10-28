@@ -92,13 +92,13 @@ def color_mask(frame_bgr: np.ndarray, color: str) -> np.ndarray:
 
 def detect_blob(frame_bgr: np.ndarray, color: str, min_area: float = 30.0,
                 near: np.ndarray | None = None, max_jump: float | None = None, compact: bool = False,
-                mask: np.ndarray | None = None) -> Blob | None:
+                mask: np.ndarray | None = None, max_area: float = np.inf) -> Blob | None:
     """Largest blob of the given color (or the one closest to `near`, if given, within `max_jump` pixels).
 
     compact: only roundish blobs (a bottle cap seen from any side, not a pen). `mask` replaces the color mask."""
     mask = color_mask(frame_bgr, color) if mask is None else mask
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
-    candidates = [i for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= min_area]
+    candidates = [i for i in range(1, n) if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area]
     if compact:
         w, h = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
         candidates = [i for i in candidates if max(w[i], h[i]) <= 3 * min(w[i], h[i])
