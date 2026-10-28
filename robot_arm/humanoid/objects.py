@@ -38,7 +38,8 @@ class PyramidLayout:
         return self.top + [0, 0, G1_CFG.cup.height]
 
 
-ORIENTATIONS = [DOWN, DOWN, UP]
+ORIENTATIONS = [DOWN, DOWN, UP]  # how each cup ends up in the pyramid
+START_ORIENTATIONS = [DOWN, DOWN, DOWN]  # all cups start mouth-down: the top cup is turned over on the way
 TOP_TILT_DEG = 20.0  # how far the top cup may lean and still count as standing
 
 

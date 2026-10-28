@@ -11,6 +11,8 @@ from robot_arm.humanoid.objects import ORIENTATIONS, UP, cup_grasp_point, cup_lo
 GRAVITY = 9.81
 OPEN_STEPS = 14
 BACK_OFF = 0.16  # how far the open hand slides back out of a released top cup (the fingertips reach ~11 cm past it)
+FLIP_ROLL = np.pi  # turning a held cup over: roll the hand about its fingers' axis (forearm rotation)
+FLIP_RELEASE = -0.2  # grip while letting go of a cup with the hand turned over: loosened, not wide open
 
 
 def hand_frame(yaw: float, palm_dir: np.ndarray | None = None) -> np.ndarray:
@@ -61,10 +63,13 @@ def to_action(obs, goal_pos, goal_mat, grip, max_step, cfg: G1TaskConfig = G1_CF
 
 
 class PlaceExpert:
-    """rise -> over the pre-grasp point -> down -> slide in -> close -> lift -> carry -> lower -> open -> leave.
+    """rise -> over the pre-grasp point -> down -> slide in -> close -> lift -> (flip) -> carry -> lower -> open ->
+    leave.
 
-    The top cup (mouth up, resting across two cups) is left by sliding the open hand back out along the fingers
-    before rising: rising straight up would drag it by its widening walls."""
+    The top cup starts mouth-down like the others: it is gripped where it will be held once it is the right way
+    up, lifted, carried over the pyramid, turned over in the air by rolling the hand about its fingers' axis, and
+    placed mouth-up. It is left by sliding the loosened hand back out along the fingers before rising: rising
+    straight up would drag it by its widening walls."""
 
     def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float = 0.0, pre_dist: float = 0.16):
         self.cfg, self.yaw, self.pre_dist = cfg, yaw, pre_dist
@@ -72,6 +77,7 @@ class PlaceExpert:
 
     def reset(self):
         self.phase, self.timer, self.stage = "rise", 0, None
+        self.flip, self.flipped = None, False
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -81,18 +87,26 @@ class PlaceExpert:
             self.stage = stage
         k = stage
         T, h = cfg.table_height, cfg.cup.height
-        R = grasp_frame(self.yaw, ORIENTATIONS[k] is UP, cfg)
         xh = hand_frame(self.yaw)[:, 0]
         site = obs[OBS_SITE]
         cup_pos, cup_axis = obs_cup(obs, k)
-        frac = cfg.top_grasp_height_frac if k == 2 else cfg.grasp_height_frac
+        final_up = ORIENTATIONS[k] is UP
+        if self.flip is None:
+            self.flip = bool(final_up and cup_axis[2] < 0)
+        R_grasp = grasp_frame(self.yaw, final_up and not self.flip, cfg)
+        R_place = R_grasp @ roll_x(FLIP_ROLL) if self.flip else R_grasp
+        R = R_place if self.flipped else R_grasp
+        final_frac = cfg.top_grasp_height_frac if k == 2 else cfg.grasp_height_frac
+        # Grip height from the cup's table side as it stands now: the same spot on the cup before and after a flip.
+        frac = final_frac if (cup_axis[2] > 0) == final_up else 1 - final_frac
         grasp = cup_grasp_point(cup_pos, cup_axis, frac, cfg)
         target = obs[OBS_TARGET]
         final_axis = np.array([0, 0, 1.0]) if ORIENTATIONS[k] is UP else np.array([0, 0, -1.0])
         target_tp = cup_table_point(target, final_axis, cfg)  # where the cup's table-side end must go
         safe_z = T + 0.30
         # High enough that the held cup (hanging frac * h below the hand) clears cups standing on the table.
-        carry_z = T + h + frac * h + 0.04
+        carry_z = T + h + final_frac * h + 0.04
+        flip_z = T + h + 0.16  # turning over, the cup sweeps about 8 cm around the grip
         pre = grasp - self.pre_dist * xh
         self.timer += 1
         grip = -1.0
@@ -119,9 +133,17 @@ class PlaceExpert:
             if self.timer > 8:
                 self.phase = "lift"
         if self.phase == "lift":
-            goal, grip = np.array([site[0], site[1], carry_z]), 1.0
+            goal, grip = np.array([site[0], site[1], flip_z if self.flip else carry_z]), 1.0
             if near(goal, 0.015):
-                self.phase = "carry"
+                self.phase = "to_flip" if self.flip else "carry"
+        if self.phase == "to_flip":  # carried upright to above the pyramid, where the arm can roll the hand over
+            goal, grip = np.array([target[0] - 0.03, target[1], flip_z]), 1.0
+            if near(goal, 0.02):
+                self.phase = "flip"
+        if self.phase == "flip":
+            goal, grip, R = np.array([target[0] - 0.03, target[1], flip_z]), 1.0, R_place
+            if np.linalg.norm(rotation_error(obs_hand_mat(obs), R_place)) < 0.08:
+                self.phase, self.flipped = "carry", True
         # From here on, servo the held cup's table-side end (not the hand) onto the target, so slip and tilt in
         # the grasp are corrected.
         cup_tp = cup_table_point(cup_pos, cup_axis, cfg)
@@ -135,12 +157,15 @@ class PlaceExpert:
             goal[2] = max(goal[2], site[2] - cfg.max_step)  # come down gently
             if cup_lowest_z(cup_pos, cup_axis, cfg) - target_tp[2] < 0.003:  # touched down
                 self.phase, self.timer = "open", 0
+        # A hand turned over has its thumb underneath: opening it all the way would swing the thumb into a base
+        # cup, so it only loosens its grip until it is out of the cup.
+        loosen = FLIP_RELEASE if self.flipped else -1.0
         if self.phase == "open":
-            goal = site
+            goal, grip = site, loosen
             if self.timer > OPEN_STEPS:  # fully open (see release_rate)
                 self.phase, self.back_from = ("back" if k == 2 else "up"), site.copy()
         if self.phase == "back":
-            goal = self.back_from - BACK_OFF * xh
+            goal, grip = self.back_from - BACK_OFF * xh, loosen
             if near(goal, 0.01):
                 self.phase = "up"
         if self.phase == "up":

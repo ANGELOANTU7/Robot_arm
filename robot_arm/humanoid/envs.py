@@ -16,7 +16,8 @@ import numpy as np
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch_frame, rotation_error,
                                            rotvec_to_mat, site_for_pinch)
-from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout, base_pair_ok,
+from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, START_ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout,
+                                        base_pair_ok,
                                         base_spacing, cap_in_cup, cup_axis, cup_grasp_point, cup_in_place,
                                         pyramid_standing, top_cup_resting)
 from robot_arm.humanoid.scene import G1Ids, build_model
@@ -161,9 +162,9 @@ class G1PyramidEnv(gym.Env):
                     u = self.layout.base_b[:2] - self.layout.base_a[:2]
                     pos[:2] += rng.uniform(0.0, 0.0045) * u / np.linalg.norm(u)
             else:
-                z = T + (cfg.cup.height if ORIENTATIONS[k] is DOWN else 0.0)
+                z = T + (cfg.cup.height if START_ORIENTATIONS[k] is DOWN else 0.0)
                 pos = np.array([*supply[k], z])
-            self._set_free(ids.cup_qpos[k], pos, ORIENTATIONS[k])
+            self._set_free(ids.cup_qpos[k], pos, ORIENTATIONS[k] if k < prebuilt else START_ORIENTATIONS[k])
         cap_xy = np.asarray(options.get("cap", cfg.cap_spot)) + rng.uniform(-j, j, 2)
         self._set_free(ids.cap_qpos, [*cap_xy, T + cfg.cap_half_height + 0.001], UP)
 
