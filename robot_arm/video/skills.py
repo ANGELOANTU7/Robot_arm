@@ -22,6 +22,7 @@ from robot_arm.video.reconstruct import _fill_gaps, _smooth
 
 GRAVITY = 9.81
 PINCH_TIPS = (4, 8)  # thumb tip and index fingertip: the cap is held between them
+RELEASE_GAP = 1.2  # the cap has left the fingertips once it is this many of its radii from them (in the image)
 
 
 @dataclass(frozen=True)
@@ -274,7 +275,8 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
     if toss:
         pinch = camera.to_table(scale * pinch_cam)
         for k, th in enumerate(throws):
-            p0, v0 = _fit_throw(track, camera, pinch, th, fps)
+            p0, v0 = _fit_throw(track, camera, pinch, th, fps, props.top_bottom_z + props.cup_height,
+                                looking_down(camera))
             th["p0"], th["v0"] = p0, v0
             info[f"throw{k}_grasp"] = float(track.t[th["grasp"]] - track.t[0])
             info[f"throw{k}_release"] = float(track.t[th["release"]] - track.t[0])
@@ -328,7 +330,9 @@ def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.
     speed = np.linalg.norm(np.gradient(_smooth(filled, fps, 0.05), axis=0), axis=1) * fps  # px/s
     dist = np.linalg.norm(filled - tips, axis=1)
     held = dist < 2.5 * r_px
-    still = (speed < 3 * r_px) & ~held & seen
+    # At rest: still, and not between the fingertips (a hand hovering above it can look near it in the image).
+    slow = np.linalg.norm(np.gradient(_smooth(filled, fps, 0.15), axis=0), axis=1) * fps < 3 * r_px
+    still = slow & (dist > 1.2 * r_px) & seen
     k = max(3, int(0.25 * fps))
     rests, i = [], 0
     while i < T:
@@ -356,16 +360,23 @@ def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.
     for i in range(1, T - away_k):
         if held[i - 1] and not held[i:i + away_k].any() and speed[i:i + away_k].max() > 15 * r_px and \
                 (not releases or i - releases[-1] > int(0.5 * fps)):
-            releases.append(i - 1)
+            # The hand follows the cap for a moment after letting go: the release is the last frame the cap was
+            # between the fingertips.
+            on = np.nonzero(dist[max(0, i - int(0.3 * fps)):i] < RELEASE_GAP * r_px)[0]
+            releases.append(max(0, i - int(0.3 * fps)) + int(on[-1]) if len(on) else i - 1)
     throws = []
     for n, rel in enumerate(releases):
         before = [rb for rb in rest_info if rb[1] <= rel]
         if not before:
             continue
         a0, b0, _ = before[-1]
-        lift = b0
-        near = np.nonzero(dist[max(0, b0 - int(fps)):b0 + 1] < 2.5 * r_px)[0]
-        grasp = max(0, b0 - int(fps)) + int(near[0]) if len(near) else b0
+        # Lift-off: the cap leaves its resting spot (the rest itself can end earlier, as soon as the hand is near
+        # it in the image); the pinch is the moment before.
+        p_rest = np.nanmedian(cap[a0:b0], axis=0)
+        off = np.linalg.norm(filled[b0:rel + 1] - p_rest, axis=1) > 1.5 * r_px
+        moved = [i for i in range(len(off) - 2) if off[i:i + 3].all()]
+        lift = b0 + (moved[0] if moved else 0)
+        grasp = max(b0, lift - int(0.25 * fps))
         nxt = releases[n + 1] if n + 1 < len(releases) else T
         after = [ra for ra in rest_info if rel < ra[0] < nxt]
         if after:
@@ -378,15 +389,25 @@ def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.
             seen_after = np.nonzero(seen[seg])[0]
             last = int(seg[seen_after[-1]]) if len(seen_after) else rel
             gone_in = n == len(releases) - 1 and _inside(track.in_cup_px, filled[last])
-            land = camera.backproject_to_plane(track.in_cup_px.mean(axis=0), z=in_cup_z) if gone_in else None
+            # The opening's centre on the mouth's plane, then down to where the cap comes to rest.
+            mouth_z = props.top_bottom_z + props.cup_height
+            at_mouth = camera.backproject_to_plane(track.in_cup_px.mean(axis=0), z=mouth_z)
+            land = at_mouth - [0, 0, mouth_z - in_cup_z] if gone_in else None
             throws.append({"grasp": grasp, "lift": lift, "release": rel, "land_frame": min(last + 1, T - 1),
                            "land": land, "in_cup": gone_in})
+            if gone_in:  # the flight is seen until it passes the mouth
+                throws[-1]["fit_end"] = (last, at_mouth)
     if throws and not any(th["in_cup"] for th in throws) and throws[-1]["land"] is not None:
         # The clip ends with the cap in the cup: the last landing is in it, even if the opening wasn't found.
         a1 = throws[-1]["land_frame"]
         b1 = next((rb for ra, rb, _ in rest_info if ra == a1), a1 + 1)
         throws[-1]["land"] = point(a1, b1, True)
         throws[-1]["in_cup"] = True
+    # The hand is often missed while it throws, so a release can be found too early. Seen from above, the flight
+    # is the stretch before the landing where the cap crosses the table in a straight line at a steady speed.
+    if looking_down(camera):
+        for th in throws:
+            th["release"] = _flight_start(track, camera, th, fps, z=in_cup_z + props.cup_height)
     # A throw that went in, and everything after it, ends the clip (the thumbs-up follows).
     last_in = max((k for k, th in enumerate(throws) if th["in_cup"]), default=None)
     if last_in is not None:
@@ -394,14 +415,52 @@ def _toss_segments(track: SkillTrack, camera: Camera, props: Props, hand_px: np.
     return throws, rest_info
 
 
-def _fit_throw(track: SkillTrack, camera: Camera, pinch: np.ndarray, th: dict,
-               fps: float) -> tuple[np.ndarray, np.ndarray]:
-    """Cap position and velocity at a throw's release: the flight from the fingertips to where it landed."""
+def looking_down(camera: Camera, max_tilt_deg: float = 35.0) -> bool:
+    """The camera looks at the table from above (its optical axis within max_tilt_deg of straight down)."""
+    return bool(-(camera.R.T @ np.array([0.0, 0.0, 1.0]))[2] > np.cos(np.radians(max_tilt_deg)))
+
+
+def _flight_start(track: SkillTrack, camera: Camera, th: dict, fps: float, z: float, tol: float = 0.015) -> int:
+    """The earliest frame from which the cap moves at constant velocity across the table until it lands."""
+    r, L = th["release"], th.get("fit_end", (th["land_frame"],))[0]
+    if th["in_cup"] and track.in_cup_px is not None:  # up to where it drops into the opening (then it bounces)
+        inside = [i for i in range(r, L + 1) if _inside(track.in_cup_px, track.obj_px[i])]
+        L = inside[0] if inside else L
+    seen = [i for i in range(r, L + 1) if np.isfinite(track.obj_px[i, 0])]
+    if len(seen) < 4:
+        return r
+    xy = np.array([camera.backproject_to_plane(track.obj_px[i], z=z)[:2] for i in seen])
+    t = track.t[seen]
+    end = len(seen) - 1
+    best = r
+    for k in range(end - 3, -1, -1):  # grow the window backwards while the motion stays a straight line
+        A = np.column_stack([t[k:end + 1], np.ones(end + 1 - k)])
+        coef = np.linalg.lstsq(A, xy[k:end + 1], rcond=None)[0]
+        if np.abs(A @ coef - xy[k:end + 1]).max() > tol:
+            break
+        best = seen[k]
+    return best
+
+
+def _fit_throw(track: SkillTrack, camera: Camera, pinch: np.ndarray, th: dict, fps: float,
+               mouth_z: float, looking_down: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """Cap position and velocity at a throw's release: the flight from the fingertips to where it landed.
+
+    Seen from the side, the flight's curvature in the image gives its depth and the fit starts at the fingertips.
+    From above (`looking_down`), the image shows where the cap is and how fast it moves across the table, but
+    hardly its height: the release point is where the cap is seen, at the fingertips' height kept within 5 cm
+    below to 15 cm above the top cup's mouth (the hand's depth while throwing is the least certain part of its
+    path). If the fit then slides along the camera rays (no curvature to see), the ballistic flight to the landing
+    point, with the time from the cap's speed across the table, is used."""
     t = track.t
     r, L = th["release"], th["land_frame"]
     frames = np.arange(r, L + 1)
     frames = frames[np.isfinite(track.obj_px[frames, 0])]
     p_rel = pinch[r]
+    z_r = float(np.clip(p_rel[2], mouth_z - 0.05, mouth_z + 0.15))
+    if looking_down:
+        p_rel = camera.backproject_to_plane(track.obj_px[r], z=z_r) if np.isfinite(track.obj_px[r, 0]) else \
+            np.array([p_rel[0], p_rel[1], z_r])
     t_land = t[L]
     if th["land"] is None:  # flew out of view: the flight seen until then, starting at the fingertips
         frames = frames[frames <= r + int(0.3 * fps)]
@@ -411,9 +470,23 @@ def _fit_throw(track: SkillTrack, camera: Camera, pinch: np.ndarray, th: dict,
         far = camera.backproject_to_plane(uv[-1], z=p_rel[2])
         v_init = (far - p_rel) / max(t[frames[-1]] - t[r], 1.0 / fps)
         return fit_flight(t[frames], uv, camera, t[r], p_rel, v_init)
-    # It lands when it reaches its resting height: the top cup's bottom, or the table.
+    # It lands when it reaches its resting height: the top cup's bottom, or the table (or, out of sight in the
+    # cup, it was last seen passing the mouth).
+    end_point = th["land"]
+    if "fit_end" in th:
+        t_land, end_point = t[th["fit_end"][0]], th["fit_end"][1]
     tf = max(t_land - t[r], 1.0 / fps)
-    v_init = (th["land"] - p_rel + np.array([0, 0, 0.5 * GRAVITY * tf * tf])) / tf
+    early = frames[frames <= r + int(0.12 * fps)]
+    if looking_down and len(early) >= 3:  # flight time from the cap's speed across the table after the release
+        xy = np.array([camera.backproject_to_plane(track.obj_px[i], z=z_r)[:2] for i in early])
+        v_h = np.polyfit(t[early] - t[r], xy, 1)[0]
+        d = end_point[:2] - p_rel[:2]
+        if np.linalg.norm(v_h) > 0.1:
+            tf = float(np.clip(np.dot(d, v_h) / np.dot(v_h, v_h), 0.12, max(tf, 0.12)))
+    v_init = (end_point - p_rel + np.array([0, 0, 0.5 * GRAVITY * tf * tf])) / tf
     if len(frames) < 3:
         return p_rel, v_init
-    return fit_flight(t[frames], track.obj_px[frames], camera, t[r], p_rel, v_init, end=(t_land, th["land"]))
+    p0, v0 = fit_flight(t[frames], track.obj_px[frames], camera, t[r], p_rel, v_init, end=(t_land, end_point))
+    if looking_down and (np.linalg.norm(p0 - p_rel) > 0.05 or np.linalg.norm(v0) > 4.0):
+        return p_rel, v_init
+    return p0, v0

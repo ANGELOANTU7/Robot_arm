@@ -80,7 +80,7 @@ def place_demo(rng: np.random.Generator, kind: str = "A", fps: float = 30.0) -> 
     Returns the demo and the other (static) cups in view: (name, table-side rim centre, mouth up)."""
     layout = pyramid_layout(rng)
     start = np.array([*(np.asarray(SUPPLY[kind]) + rng.uniform(-0.02, 0.02, 2)), 0.0])
-    end = np.array([*layout[kind], H if kind == "top" else 0.0])
+    end = np.array([*layout[kind], PROPS.top_bottom_z if kind == "top" else 0.0])
     supply = lambda k: (k, np.array([*SUPPLY[k], 0.0]), k == "top")  # noqa: E731
     pyramid = lambda k: (k, np.array([*layout[k], 0.0]), False)  # noqa: E731
     static = {"A": [supply("B"), supply("top")], "B": [pyramid("A"), supply("top")],
@@ -120,7 +120,7 @@ def toss_demo(rng: np.random.Generator, fps: float = 60.0) -> tuple[SkillDemo, l
     from the mouth, flying along the base cups. Returns the demo and the pyramid's cups (as place_demo)."""
     layout = pyramid_layout(rng)
     u = np.array([*layout["axis"], 0.0])
-    mouth = np.array([*layout["top"], 2 * H])
+    mouth = np.array([*layout["top"], PROPS.top_bottom_z + H])
     cap = np.array([rng.uniform(-0.32, -0.24), rng.uniform(0.06, 0.12), PROPS.cap_height / 2])
     side = np.array([*(_rot2(rng.uniform(-0.25, 0.25)) @ u[:2]), 0.0])
     R = mouth + rng.uniform(0.05, 0.30) * side + [0, 0, rng.uniform(0.04, 0.12)]
@@ -203,9 +203,11 @@ def cup_front_px(camera: Camera, base: np.ndarray, mouth_up: bool, props: Props 
     return camera.project(base + [0, 0, z] - props.radius_at(z, mouth_up) * view / np.linalg.norm(view))[0]
 
 
-def rim_px(camera: Camera, mouth: np.ndarray, props: Props = PROPS) -> np.ndarray:
-    """Centre of a mouth-up cup's widest red row: its mouth centre, just under the lip."""
-    return camera.project(mouth - [0, 0, props.lip])[0]
+def mouth_polygon(camera: Camera, mouth: np.ndarray, props: Props = PROPS) -> np.ndarray:
+    """Image outline of a mouth-up cup's opening."""
+    a = np.linspace(0, 2 * np.pi, 32, endpoint=False)
+    ring = mouth + np.stack([props.mouth_radius * np.cos(a), props.mouth_radius * np.sin(a), 0 * a], 1)
+    return camera.project(ring)
 
 
 def object_paths(demo: SkillDemo) -> np.ndarray:
@@ -253,24 +255,29 @@ def render_track(demo: SkillDemo, camera: Camera, rng: np.random.Generator, stat
     path = object_paths(demo)
     dist = np.linalg.norm(camera.to_cam(path), axis=1)
     f = camera.K[0, 0]
-    marks = {}
+    # The marks are table-frame points, as skill_process measures them in the still frames (to within a few mm).
+    marks, in_cup_px = {}, None
+    named = {name: base for name, base, _ in static_cups}
     if demo.skill == "toss":
         obj_px = camera.project(path)
         obj_px[cap_hidden(demo, path)] = np.nan
         obj_r = f * PROPS.cap_radius / dist
-        marks["rim"] = rim_px(camera, demo.obj_end)
+        in_cup_px = mouth_polygon(camera, demo.obj_end) + rng.normal(0, pixel_noise, 2)
+        if "A" in named and "B" in named:
+            u = named["B"] - named["A"]
+            marks["axis"] = u / np.linalg.norm(u)
     else:
         mouth_up = demo.skill == "place_top"
         obj_px = np.array([cup_front_px(camera, p, mouth_up) for p in path])
         obj_r = f * 0.07 / dist  # about the cup's half-diagonal
-        marks["start"] = cup_front_px(camera, demo.obj_start, mouth_up)
-        if mouth_up:
-            marks["rim"] = rim_px(camera, demo.obj_end + [0, 0, H])
+        noisy = lambda p: np.asarray(p, float) + [*rng.normal(0, 0.002, 2), 0.0]  # noqa: E731
+        marks["start"] = noisy(demo.obj_start)
+        if mouth_up and "A" in named and "B" in named:
+            a, b = noisy(named["A"]), noisy(named["B"])
+            mid = (a + b) / 2
+            marks.update(base_a=a, base_b=b, end=mid + [0, 0, PROPS.top_bottom_z], axis=(b - a) / np.linalg.norm(b - a),
+                         mouth=mid + [0, 0, PROPS.top_bottom_z + H])
         else:
-            marks["end"] = cup_front_px(camera, demo.obj_end, mouth_up)
-    named = {name: base for name, base, _ in static_cups}
-    if demo.skill != "place_base" and "A" in named and "B" in named:
-        marks["base_a"], marks["base_b"] = (cup_front_px(camera, named[k], False) for k in "AB")
-    marks = {k: v + rng.normal(0, pixel_noise, 2) for k, v in marks.items()}
+            marks["end"] = noisy(demo.obj_end)
     obj_px = obj_px + rng.normal(0, pixel_noise, obj_px.shape)
-    return SkillTrack(demo.t.copy(), hand_px, hand_world, obj_px, obj_r + rng.normal(0, 0.3, T), marks)
+    return SkillTrack(demo.t.copy(), hand_px, hand_world, obj_px, obj_r + rng.normal(0, 0.3, T), marks, in_cup_px)

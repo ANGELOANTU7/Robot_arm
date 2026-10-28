@@ -73,7 +73,11 @@ def two_cup_centres(mask: np.ndarray, camera: Camera, z: float, radius: float) -
     ys, xs = np.nonzero(mask)
     if len(xs) < 200:
         return None
-    P = backproject(camera, np.column_stack([xs, ys])[:: max(1, len(xs) // 4000)], z)[:, :2]
+    # The pair's direction from the blob's lower edge (the rims nearest the camera, on the table): the whole blob
+    # mapped onto the table plane is stretched in depth by the cups' walls when seen at an angle.
+    cols = np.unique(xs)
+    low = np.array([[c, ys[xs == c].max()] for c in cols], float)
+    P = backproject(camera, low, z)[:, :2]
     mean = P.mean(axis=0)
     axis = np.linalg.svd(P - mean, full_matrices=False)[2][0]
     out = backproject(camera, outline(mask), z)[:, :2]

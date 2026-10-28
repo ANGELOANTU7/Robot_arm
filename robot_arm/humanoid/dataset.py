@@ -20,8 +20,14 @@ def demo_problem(demo: SkillDemo) -> str | None:
         return "depth scale at the edge of its search range"
     if demo.skill != "toss" and demo.t_release - demo.t_grasp < 0.25:
         return "grasp and release not told apart"
-    if demo.skill == "toss" and not np.isfinite(demo.release_vel).all():
-        return "no throw"
+    if demo.skill == "toss":
+        from robot_arm.humanoid.retarget import throw_style
+
+        if not np.isfinite(demo.release_vel).all():
+            return "no throw"
+        style = throw_style(demo)
+        if not 0.15 <= style["flight_time"] <= 0.8 or style["release_dist"] < 0.05:
+            return "the cap's flight was not made out"
     return None
 
 

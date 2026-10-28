@@ -2,11 +2,11 @@
 
 The G1 learns the pyramid task from short phone clips of **one skill each**:
 
-| Clip | What you do | How many |
+| Clip (folder or name) | What you do | How many |
 |---|---|---|
-| `place_base_NN.mp4` | Take a mouth-down cup from the supply area and set it down mouth-down at its pyramid spot. | ~10 (cup A on its own, then cup B next to A) |
-| `place_top_NN.mp4` | Take the mouth-up top cup and set it centred on the two base cups. | ~10 |
-| `toss_NN.mp4` | Pinch the bottle cap off the table and throw it **sideways**, along the two base cups, into the top cup. | ~10–15 |
+| `part_a/` or `place_base_NN.mp4` | Take a mouth-down cup from wherever it lies and set it down mouth-down at its pyramid spot; then the second cup next to it (one clip may show both, A then B). | ~10 |
+| `part_b/` or `place_top_NN.mp4` | Take the third cup (lying mouth-down like the others), turn it over in the air with one hand and set it mouth-up across the two base cups. | ~10 |
+| `part_c/` or `toss_NN.mp4` | Pinch the bottle cap off the table and throw it into the top cup. After a miss, pick it up again and throw again until it goes in; then a thumbs-up. | ~10 |
 
 One fixed camera is enough. The printed marker sheet gives each clip a metric table frame. The pipeline
 recovers your **palm's 3D position and orientation**, how closed your hand is, the moment you grasp and release,
@@ -71,14 +71,14 @@ the camera from the sheet.
 2. Lift it about 10 cm, carry it over its spot and lower it until it stands on the table, mouth down.
 3. Open your hand and pull it back out of the frame.
 
-Record cup A alone at the pyramid spot. Then record cup B being placed **next to A, rims almost touching** (a
-gap of a few millimetres). Do both several times, moving the supply cups and the pyramid spot a little between
-clips.
+Record cup A alone at the pyramid spot and cup B being placed **next to A, rims almost touching**, either as
+separate clips or both in one clip (A first). Move the cups around between clips: they can lie anywhere.
 
 ### place_top
 
-1. Start with A and B standing side by side, mouth down. The top cup stands mouth up in the supply area.
-2. Grab the top cup from the side, lift it over the pair and set it down **centred across both base cups**.
+1. Start with A and B standing side by side, mouth down. The top cup lies mouth down somewhere on the table.
+2. Grab it from the side, lift it, **turn it over in the air** with the same hand and set it down **centred
+   across both base cups**, mouth up.
 3. Open your hand gently and pull it back out of the frame. The pyramid must stay standing.
 
 ### toss
@@ -91,7 +91,10 @@ clips.
    cups, the cap's push on landing goes the way the top cup is held by both of them; thrown from the front, it
    would tip the top cup over.
 
-Misses and collapsing pyramids are fine to record, but successful throws teach the most. The robot copies your
+5. If it misses, pick the cap up where it landed and throw again, until it is in. Then show a **thumbs-up**
+   for a moment, and take your hand out of the frame.
+
+Each throw is found where the cap leaves your fingers; the last one is the one that went in. The robot copies your
 throw's style (release distance, height, how far off the line, arc and wind-up). Its aim is corrected in
 simulation. The robot's own throw works best from about 8–20 cm, so throws from further away are pulled into
 that range.
@@ -104,8 +107,10 @@ mkdir -p data/videos_pyramid && cp /path/to/clips/*.mp4 data/videos_pyramid/
 # 1. Quick check on one clip of each kind: are the markers found, and do only the cups and the cap light up?
 python scripts/g1_process_videos.py data/videos_pyramid/toss_01.mp4 --check
 
-# 2. Process all clips (the size defaults are your cups and cap; pass yours if they differ)
-python scripts/g1_process_videos.py data/videos_pyramid/*.mp4
+# 2. Process all clips (the size defaults are your cups and cap; pass yours if they differ). Clips in part_a/,
+#    part_b/ and part_c/ folders get their skill from the folder. --focal-px: your phone's focal length in pixels
+#    at the clip's resolution (iPhone 16, 1x, 1080x1920: about 1740).
+python scripts/g1_process_videos.py data/videos_pyramid/*/*.MOV --focal-px 1740
 ```
 
 For each clip, open `data/processed/human_pyramid/<clip>_overlay.mp4` and `<clip>_trajectory.png`:
@@ -115,8 +120,9 @@ For each clip, open `data/processed/human_pyramid/<clip>_overlay.mp4` and `<clip
   palm. While you hold a cup, blue should point into it.
 - **HOLD** should cover the time you held the object. The white cross marks where the object started; the yellow
   cross marks where the cup ended up, or the top cup's mouth in toss clips.
-- Cyan dots with labels mark what was measured in the still frames: `start` / `end` (the moved cup's lowest
-  point, just above its white rim when mouth down), `rim` (the top cup's mouth), `base_a` / `base_b`.
+- Cyan dots with labels mark what was measured in the still frames: `start` / `end` (the centre of the moved
+  cup's rim on the table), `base_a` / `base_b` and `mouth` (the pyramid, in top-cup clips), `other` (cup A, when
+  cup B is placed). In toss clips the outline of the top cup's opening is drawn too.
 - In toss clips, the orange curve is the fitted flight of the cap: it should run through the cap's path.
 
 `summary.json` lists each clip's numbers:
