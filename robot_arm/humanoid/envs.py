@@ -18,7 +18,7 @@ from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch
                                            rotvec_to_mat, site_for_pinch)
 from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout, base_pair_ok,
                                         base_spacing, cap_in_cup, cup_axis, cup_grasp_point, cup_in_place,
-                                        pyramid_standing, top_cup_resting, wedge_height)
+                                        pyramid_standing, top_cup_resting)
 from robot_arm.humanoid.scene import G1Ids, build_model
 
 N_STAGES = 4  # place cup0, place cup1, place cup2, toss
@@ -107,17 +107,32 @@ class G1PyramidEnv(gym.Env):
         self.data.qpos[qadr:qadr + 3] = pos
         self.data.qpos[qadr + 3:qadr + 7] = quat
 
-    def _prebuilt_top(self, off: float) -> np.ndarray:
-        """Top cup position in the V between the base cups, `off` from the centre front to back, as the opening
-        fingers leave a placed top cup. Off-centre, it wedges lower."""
-        u = self.layout.base_b[:2] - self.layout.base_a[:2]
-        u /= np.linalg.norm(u)
-        xy = self.layout.top[:2] + off * np.array([-u[1], u[0]])
-        return np.array([*xy, self.cfg.table_height + wedge_height(self.cfg) - off + 0.002])
-
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         options = options or {}
+        if self.task != "toss":
+            return self._reset_scene(options)
+        # The throw starts where it does in the full task: the robot has just let go of the top cup it put on
+        # the base cups, with the hand still around it. The scripted expert places it (a few tries if needed).
+        from robot_arm.humanoid.scripted import PlaceExpert
+
+        for _ in range(5):
+            obs, _ = self._reset_scene(options, stage=2)
+            expert = PlaceExpert(self.cfg)
+            for _ in range(int(round(self.cfg.place_seconds / self.cfg.control_dt))):
+                obs, _, terminated, _, info = self.step(expert(obs))
+                if terminated:
+                    break
+            if info["is_success"]:
+                break
+        self.stage = 3
+        self.placed[2] = self.cup_pos(2)
+        self.steps, self.events, self.fail_reason, self.release_distance = 0, [], None, None
+        self._phi = self._potential()
+        return self._obs(), self._info(False)
+
+    def _reset_scene(self, options: dict, stage: int | None = None):
+        """Layout, cups and cap, the arm at its ready pose. Cups before the start stage stand in place."""
         rng, cfg = self.np_random, self.cfg
         m, d, ids = self.model, self.data, self.ids
         mujoco.mj_resetData(m, d)
@@ -130,18 +145,21 @@ class G1PyramidEnv(gym.Env):
         self.layout = PyramidLayout.make(center, yaw, cfg)
         supply = [np.asarray(p) + rng.uniform(-j, j, 2) for p in options.get("supply", cfg.supply_cups)]
 
-        if self.task == "place":
+        if stage is not None:
+            self.stage = stage
+        elif self.task == "place":
             self.stage = self.fixed_stage if self.fixed_stage is not None else int(rng.integers(3))
             self.stage = int(options.get("stage", self.stage))
         else:
-            self.stage = 3 if self.task == "toss" else 0
+            self.stage = 0
         prebuilt = self.stage  # cups with index < stage start in their final place
         T = cfg.table_height
         for k in range(3):
             if k < prebuilt:
                 pos = self.layout.targets()[k] + np.array([*rng.normal(0, 0.002, 2), 0.0])
-                if k == 2:  # where a top cup the robot placed ends up
-                    pos = self._prebuilt_top(rng.uniform(0.005, 0.015))
+                if k == 1:  # the robot sets cup B down 0-4.5 mm further out than its target
+                    u = self.layout.base_b[:2] - self.layout.base_a[:2]
+                    pos[:2] += rng.uniform(0.0, 0.0045) * u / np.linalg.norm(u)
             else:
                 z = T + (cfg.cup.height if ORIENTATIONS[k] is DOWN else 0.0)
                 pos = np.array([*supply[k], z])
@@ -155,11 +173,6 @@ class G1PyramidEnv(gym.Env):
         d.ctrl[ids.hand_ctrl] = hand_targets(-1.0)
         mujoco.mj_forward(m, d)
         mujoco.mj_step(m, d, nstep=100)  # let everything settle
-        deep = d.xpos[ids.cup_bodies[2]][2] < cfg.table_height + wedge_height(cfg) - 0.025  # slowly sliding in
-        if prebuilt == 3 and (deep or not top_cup_resting(d, ids.cup_bodies, cfg)):  # set it in centred instead
-            self._set_free(ids.cup_qpos[2], self._prebuilt_top(0.0), UP)
-            d.qvel[ids.cup_dofs[2]:ids.cup_dofs[2] + 6] = 0
-            mujoco.mj_step(m, d, nstep=100)
 
         self.grip = -1.0
         self.hand_state = -1.0
