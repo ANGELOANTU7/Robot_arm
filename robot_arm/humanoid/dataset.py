@@ -49,6 +49,36 @@ def load_skill_demos(folder: str | Path, check: bool = True) -> dict[str, list[S
     return out
 
 
+def _place_trial(job):
+    from robot_arm.humanoid.envs import G1PyramidEnv
+    from robot_arm.humanoid.retarget import G1Retargeter, rollout
+
+    demo, stage, seed = job
+    env = G1PyramidEnv(task="place", stage=stage)
+    *_, info, _ = rollout(env, G1Retargeter({stage: demo}, None), np.random.default_rng(seed), seed=seed)
+    return bool(info["is_success"])
+
+
+def reproducible_place_demos(demos: dict[str, list[SkillDemo]], trials: int = 3, seed: int = 81_000,
+                             pool=None) -> tuple[dict, list]:
+    """Keep the place demos the robot can reproduce: each is retargeted on `trials` layouts (without noise), and
+    one that never succeeds is left out (its path runs where the G1's arm can't follow, or its grasp is off).
+    Returns the demos and [(name, successes)] of those left out."""
+    from robot_arm.humanoid.retarget import place_demos_by_cup
+
+    a, b, top = place_demos_by_cup(demos)
+    jobs = [(d, stage, seed + i) for stage, group in ((0, a), (1, b), (2, top)) for d in group for i in range(trials)]
+    results = pool.map(_place_trial, jobs) if pool is not None else list(map(_place_trial, jobs))
+    wins: dict[int, int] = {}
+    for (d, _, _), ok in zip(jobs, results):
+        wins[id(d)] = wins.get(id(d), 0) + ok
+    dropped = {id(d) for d, _, _ in jobs if wins[id(d)] == 0}
+    out = {k: ([d for d in v if id(d) not in dropped] if k in ("place_base", "place_top") else v)
+           for k, v in demos.items()}
+    names = sorted({(d.info.get("name", "?"), wins[id(d)]) for d, _, _ in jobs if id(d) in dropped})
+    return out, names
+
+
 def throw_styles(toss_demos: list[SkillDemo], pool=None, calibrate: bool = True) -> list[dict]:
     """TossExpert parameters for every human throw: style in the trust region, aim calibrated in simulation."""
     from robot_arm.humanoid.retarget import calibrate_aim, throw_style, toss_params

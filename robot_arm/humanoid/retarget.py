@@ -275,7 +275,11 @@ class PlaceTracker:
             goal = plan.waypoints[self.idx] + ramp * (cup_pos - self.cup0)  # follow the cup if it was nudged
             if len(plan.turn):
                 R = rot_z(plan.turn[min(self.idx, len(plan.turn) - 1)]) @ R_grasp  # the human's turn while reaching
+            before = self.idx
             self._advance(site, goal, plan.grasp_idx)
+            self.stuck = 0 if self.idx > before else getattr(self, "stuck", 0) + 1
+            if self.stuck > 8:  # a waypoint the arm can't reach: go on to the next
+                self.idx, self.stuck = min(self.idx + 1, plan.grasp_idx), 0
             if self.idx >= plan.grasp_idx:
                 self.phase, self.timer = "approach", 0
         if self.phase == "approach":
@@ -326,9 +330,14 @@ class PlaceTracker:
                 self.idx = plan.release_idx
         if self.phase == "retreat":
             goal = self.release_site + plan.waypoints[self.idx] - plan.waypoints[plan.release_idx]
+            before = self.idx
             self._advance(site, goal, len(plan.waypoints) - 1)
-            if self.idx >= len(plan.waypoints) - 1:  # the human's retreat ends low: rise clear of the cups
-                goal = np.array([site[0], site[1], max(goal[2], cfg.table_height + 0.30)])
+            self.stuck = 0 if self.idx > before else getattr(self, "stuck", 0) + 1
+            if self.idx >= len(plan.waypoints) - 1 or self.stuck > 5:
+                # The human's retreat is done, or the arm can't follow it here: rise clear of the cups.
+                self.phase = "rise"
+        if self.phase == "rise":
+            goal = np.array([site[0], site[1], cfg.table_height + 0.30])
         return to_action(obs, goal, R, grip, cfg.max_step, cfg)
 
 

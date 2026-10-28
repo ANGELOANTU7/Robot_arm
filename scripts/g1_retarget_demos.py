@@ -22,7 +22,8 @@ import cv2
 import imageio.v2 as imageio
 import numpy as np
 
-from robot_arm.humanoid.dataset import generate_g1, load_skill_demos, save_dataset, throw_styles
+from robot_arm.humanoid.dataset import (generate_g1, load_skill_demos, reproducible_place_demos, save_dataset,
+                                        throw_styles)
 from robot_arm.humanoid.retarget import expert_params
 
 
@@ -64,7 +65,8 @@ def main():
     p.add_argument("--styles", type=Path, help="reuse throw styles saved by an earlier run (g1_styles.json)")
     p.add_argument("--task-mix", default="full=0.5,place=0.15,toss=0.35",
                    help="share of episodes per env task, e.g. toss=1 for more toss data only")
-    p.add_argument("--videos", type=int, default=1, help="render this many demos per skill on the G1")
+    p.add_argument("--videos", type=int, default=0, help="render this many demos per skill on the G1 (needs a GL"
+                   " context: MUJOCO_GL=osmesa or egl)")
     args = p.parse_args()
 
     demos = load_skill_demos(args.human)
@@ -72,10 +74,14 @@ def main():
     print(f"Loaded from {args.human}: " + ", ".join(f"{len(v)} {k}" for k, v in demos.items()))
     for name, why in rejected:
         print(f"  left out {name}: {why}")
-    if args.styles:
-        styles = json.loads(args.styles.read_text())
-    else:
-        with get_context("spawn").Pool(args.workers) as pool:
+    with get_context("spawn").Pool(args.workers) as pool:
+        demos, unreproducible = reproducible_place_demos(demos, pool=pool)
+        for name, wins in unreproducible:
+            print(f"  left out {name}: never placed its cup when retargeted (0 of 3 layouts)")
+        print("Kept: " + ", ".join(f"{len(v)} {k}" for k, v in demos.items()))
+        if args.styles:
+            styles = json.loads(args.styles.read_text())
+        else:
             styles = throw_styles(demos["toss"], pool=pool, calibrate=not args.no_calibrate)
     for demo, style in zip(demos["toss"], styles):
         hist = style.get("aim_history", [])

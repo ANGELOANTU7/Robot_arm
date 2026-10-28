@@ -180,13 +180,14 @@ class PlaceExpert:
         flip_at = np.array([*(target[:2] - 0.03 * xh_p[:2]), flip_z])
         if self.phase == "to_flip":  # carried mouth-down to above the pyramid, turning to the placing heading
             goal, grip, R = flip_at, 1.0, hand_frame(self.yaw_p) @ taper
-            if near(goal, 0.02) and np.linalg.norm(rotation_error(obs_hand_mat(obs), R)) < 0.1:
+            if (near(goal, 0.02) and np.linalg.norm(rotation_error(obs_hand_mat(obs), R)) < 0.1) or \
+                    (near(goal, 0.04) and self.timer > 40):
                 self.phase, self.timer = "flip", 0
         if self.phase == "flip":  # then roll the hand over about its fingers' axis
             goal, grip, R = flip_at, 1.0, R_place
             err = np.linalg.norm(rotation_error(obs_hand_mat(obs), R_place))
-            if err < 0.08 or (self.timer > 25 and err < 0.2):  # or as close as the joint limits allow
-                self.phase, self.flipped, self.timer = "carry", True, 0
+            if err < 0.08 or (self.timer > 25 and err < 0.2) or (self.timer > 50 and err < 0.4):
+                self.phase, self.flipped, self.timer = "carry", True, 0  # or as close as the joint limits allow
         # From here on, servo the held cup's table-side end (not the hand) onto the target, so slip and tilt in
         # the grasp are corrected: the hand turns so the cup's axis is upright whatever its tilt in the grip.
         if self.phase in ("carry", "lower") and (self.flipped or not self.flip):
