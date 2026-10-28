@@ -1,4 +1,5 @@
-"""Results table for the G1 cup pyramid: every policy on each place stage, the toss and the full task.
+"""Results table for the G1 cup pyramid: every policy on each place stage, the toss (re-throws after misses, then
+the thumbs-up) and the full task.
 
     python scripts/g1_results.py --replay data/processed/human_pyramid_synthetic \
         --bc runs/g1_place_bc/policy.pt runs/g1_toss_bc/policy.pt \
@@ -52,7 +53,8 @@ def main():
     for name, row in results.items():
         lines.append(f"| {name} | " + " | ".join(f"{100 * row[c]['success_rate']:.0f}%" for c, _, _ in COLUMNS)
                      + " |")
-    table = "\n".join(lines) + f"\n\n{args.episodes} episodes per cell.\n"
+    table = "\n".join(lines) + f"\n\n{args.episodes} episodes per cell. Missed throws per toss episode (each followed by" \
+        " a re-throw): " + ", ".join(f"{name} {row['toss']['misses_per_episode']:.2f}" for name, row in results.items()) + ".\n"
     (args.out / "g1_results.md").write_text(table)
     print(table)
 
