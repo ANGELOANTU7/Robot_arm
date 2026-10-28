@@ -42,6 +42,17 @@ def grasp_frame(yaw: float, mouth_up: bool, cfg: G1TaskConfig = G1_CFG) -> np.nd
     return hand_frame(yaw) @ roll_x(taper if mouth_up else 0.0)
 
 
+def upright_hand(R_nominal: np.ndarray, hand: np.ndarray, cup_axis: np.ndarray, want: np.ndarray) -> np.ndarray:
+    """Hand orientation near R_nominal that turns a held cup's axis to `want`, given the cup's axis now and the
+    hand's orientation now (the cup is assumed to move with the hand)."""
+    a = R_nominal @ (hand.T @ cup_axis)  # where the cup's axis would point with the hand at R_nominal
+    c = np.cross(a, want)
+    s, cos = np.linalg.norm(c), float(np.dot(a, want))
+    if s < 1e-9:
+        return R_nominal
+    return rotvec_to_mat(c / s * np.arctan2(s, cos)) @ R_nominal
+
+
 def obs_hand_mat(obs: np.ndarray) -> np.ndarray:
     r = obs[OBS_HAND_ROT]
     x, y = r[:3], r[3:6]
@@ -77,7 +88,7 @@ class PlaceExpert:
 
     def reset(self):
         self.phase, self.timer, self.stage = "rise", 0, None
-        self.flip, self.flipped = None, False
+        self.flip, self.flipped, self.R_hold = None, False, None
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -145,7 +156,11 @@ class PlaceExpert:
             if np.linalg.norm(rotation_error(obs_hand_mat(obs), R_place)) < 0.08:
                 self.phase, self.flipped = "carry", True
         # From here on, servo the held cup's table-side end (not the hand) onto the target, so slip and tilt in
-        # the grasp are corrected.
+        # the grasp are corrected: the hand turns so the cup's axis is upright whatever its tilt in the grip.
+        if self.phase in ("carry", "lower") and (self.flipped or not self.flip):
+            R = self.R_hold = upright_hand(R_place, obs_hand_mat(obs), cup_axis, final_axis)
+        elif self.phase in ("open", "back", "up") and self.R_hold is not None:
+            R = self.R_hold  # let go without turning the hand
         cup_tp = cup_table_point(cup_pos, cup_axis, cfg)
         cup_offset = site - cup_tp
         if self.phase == "carry":
