@@ -4,6 +4,7 @@ import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.controller import pinch_frame, rotation_error, rotvec_to_mat, site_for_pinch
+from robot_arm.humanoid.hands import get_hand
 from robot_arm.humanoid.envs import (OBS_CAP, OBS_CAP_VEL, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE,
                                      OBS_STAGE, OBS_TARGET, THUMBS_UP, TOSS, obs_cup)
 from robot_arm.humanoid.objects import (ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point,
@@ -94,7 +95,18 @@ class PlaceExpert:
                  flip_taper_sign: float = -1.0, flip_wait: int = 0, flip_exit_rise: float = 0.0,
                  flip_exit_speed: float = 1.0, flip_offset: float = 0.012, flip_exit_out: float | None = 0.5):
         """`yaw`: hand heading for the grasp (None: away from the shoulder, towards the cup); `place_yaw` and
-        `top_place_yaw`: heading while putting a base cup / the top cup down (the hand turns while carrying)."""
+        `top_place_yaw`: heading while putting a base cup / the top cup down (the hand turns while carrying).
+        Settings the hand needs (`Hand.expert`) replace the defaults unless they are given here."""
+        given = {k: v for k, v in locals().items() if k not in ("self", "cfg")}
+        defaults = PlaceExpert.__init__.__kwdefaults__ or dict(zip(PlaceExpert.__init__.__code__.co_varnames[2:],
+                                                                    PlaceExpert.__init__.__defaults__[1:]))
+        for k, v in get_hand(cfg.hand).expert.items():
+            if given[k] == defaults[k]:
+                given[k] = v
+        yaw, place_yaw, top_place_yaw, pre_dist, drop = (given[k] for k in ("yaw", "place_yaw", "top_place_yaw",
+                                                                            "pre_dist", "drop"))
+        flip_taper_sign, flip_wait, flip_exit_rise = given["flip_taper_sign"], given["flip_wait"], given["flip_exit_rise"]
+        flip_exit_speed, flip_offset, flip_exit_out = given["flip_exit_speed"], given["flip_offset"], given["flip_exit_out"]
         self.cfg, self.yaw, self.pre_dist, self.drop = cfg, yaw, pre_dist, drop
         self.place_yaw, self.top_place_yaw = place_yaw, top_place_yaw
         self.flip_taper_sign, self.flip_wait = flip_taper_sign, flip_wait
@@ -257,7 +269,7 @@ class TossExpert:
                  release_height: float = 0.08, release_bearing: float = 0.05, windup: float = 0.18,
                  speed_gain: float = 1.0, aim_offset=(0.0, 0.0, 0.0), carry_time: float = 0.05,
                  close_steps: int = 6, pinch_depth: float = 0.008, correction: float = 0.8):
-        self.cfg, self.correction = cfg, correction
+        self.cfg, self.correction, self.hand = cfg, correction, get_hand(cfg.hand)
         self.flight_time, self.release_dist, self.release_height = flight_time, release_dist, release_height
         self.release_bearing, self.windup, self.speed_gain = release_bearing, windup, speed_gain
         self.aim_offset = np.asarray(aim_offset, float)
@@ -294,14 +306,17 @@ class TossExpert:
         v = (mouth + self.aim_offset + self.aim - R + np.array([0, 0, 0.5 * GRAVITY * t * t])) / t
         return R, v
 
-    pinch_frame = staticmethod(pinch_frame)
-    site_for = staticmethod(site_for_pinch)
+    def pinch_frame(self, throw_dir: np.ndarray) -> np.ndarray:
+        return pinch_frame(throw_dir, self.hand)
+
+    def site_for(self, pinch_world: np.ndarray, R: np.ndarray) -> np.ndarray:
+        return site_for_pinch(pinch_world, R, self.hand)
 
     def thumbs_up(self, obs: np.ndarray) -> np.ndarray:
         """Over to the spot beside the shoulder, turning the hand thumb-side up, then close the fist."""
         cfg = self.cfg
         site, spot = obs[OBS_SITE], obs[OBS_TARGET]
-        R = hand_frame(THUMBS_UP_YAW) @ roll_x(np.pi / 2)
+        R = hand_frame(THUMBS_UP_YAW) @ roll_x(self.hand.thumbs_up_roll)
         goal = np.array([spot[0], spot[1], max(spot[2], site[2])]) if site[2] < spot[2] - 0.02 else spot
         err = np.linalg.norm(rotation_error(obs_hand_mat(obs), R))
         if np.linalg.norm(spot - site) < 0.03 and err < 0.15:

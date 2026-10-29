@@ -1,25 +1,21 @@
-"""MuJoCo scene: Unitree G1 (Dex3 hands, pelvis fixed) at a table with three party cups and a bottle cap."""
+"""MuJoCo scene: Unitree G1 (pelvis fixed) at a table with three party cups and a bottle cap. The right hand is the
+Dex3 or a five-fingered Shadow hand (see hands.py)."""
 
 import math
 
 import mujoco
 import numpy as np
 
-from robot_arm.assets import ensure_g1
+from robot_arm.assets import ensure_g1, ensure_model
 from robot_arm.humanoid.config import G1_CFG, CupSpec, G1TaskConfig
+from robot_arm.humanoid.hands import DEX3, SHADOW, Hand, get_hand
 from robot_arm.scene import look_at
 
 # Joints the right-hand skills move; everything else holds the stand posture.
 WAIST = ["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
 RIGHT_ARM = ["right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
              "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint"]
-RIGHT_HAND = ["right_hand_thumb_0_joint", "right_hand_thumb_1_joint", "right_hand_thumb_2_joint",
-              "right_hand_index_0_joint", "right_hand_index_1_joint",
-              "right_hand_middle_0_joint", "right_hand_middle_1_joint"]
-RIGHT_COLLIDERS = ["right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link", "right_wrist_yaw_link",
-                   "right_hand_thumb_0_link", "right_hand_thumb_1_link", "right_hand_thumb_2_link",
-                   "right_hand_index_0_link", "right_hand_index_1_link",
-                   "right_hand_middle_0_link", "right_hand_middle_1_link"]
+RIGHT_ARM_COLLIDERS = ["right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link", "right_wrist_yaw_link"]
 
 # Stand posture (Menagerie "stand" keyframe for the arms); unlisted joints are 0.
 STAND = {
@@ -36,11 +32,6 @@ READY = {
     "right_elbow_joint": -0.469, "right_wrist_roll_joint": 0.989, "right_wrist_pitch_joint": -0.174,
     "right_wrist_yaw_joint": -0.271,
 }
-
-# Where a held cup's axis sits, between the palm/fingers and the thumb, in the right_wrist_yaw_link frame.
-# The open fingers reach y = +0.009, so a cup of radius r (3.6 cm where the party cups are held) needs its
-# axis at y > 0.009 + r to slide in without being pushed; the closing fingers then wrap its far side.
-GRASP_SITE_POS = (0.11, 0.050, 0.0)
 
 CUP_NAMES = ("cup0", "cup1", "cup2")  # two base cups (given mouth-down), the top cup (given mouth-up)
 
@@ -83,6 +74,33 @@ def add_cup(world: mujoco.MjsBody, name: str, cup: CupSpec, rgba) -> mujoco.MjsB
     return body
 
 
+def replace_right_hand(spec: mujoco.MjSpec, hand: Hand) -> None:
+    """Swap the right Dex3 (its palm is part of the wrist link; the fingers are child bodies) for `hand`, a
+    Menagerie hand whose root body is mounted on the wrist link."""
+    for a in list(spec.actuators):
+        if a.name.startswith("right_hand_"):
+            spec.delete(a)
+    wrist = spec.body("right_wrist_yaw_link")
+    for name in ("right_hand_thumb_0_link", "right_hand_middle_0_link", "right_hand_index_0_link"):
+        spec.delete(spec.body(name))
+    for g in list(wrist.geoms):
+        if g.meshname == "right_hand_palm_link":
+            spec.delete(g)
+    child = mujoco.MjSpec.from_file(str(ensure_model(*hand.menagerie)))
+    root = child.body(hand.root_body)
+    # The hand's own wrist joints are dropped: the G1's wrist does that job.
+    for j in list(root.joints):
+        for a in list(child.actuators):
+            if a.target == j.name:
+                child.delete(a)
+        child.delete(j)
+    for a in list(child.actuators):  # actuators of joints above the root (the hand's forearm and wrist)
+        if a.target in ("rh_WRJ1", "rh_WRJ2"):
+            child.delete(a)
+    frame = wrist.add_frame(pos=list(hand.mount_pos), quat=list(hand.mount_quat))
+    frame.attach_body(root, hand.prefix, "")
+
+
 def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
     scene_xml = ensure_g1().parent / "scene_with_hands.xml"
     spec = mujoco.MjSpec.from_file(str(scene_xml))
@@ -96,8 +114,11 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
     spec.delete(spec.joint("floating_base_joint"))
     for key in list(spec.keys):
         spec.delete(key)
+    hand = get_hand(cfg.hand)
+    if hand.menagerie is not None:
+        replace_right_hand(spec, hand)
 
-    right_colliders = set(RIGHT_COLLIDERS)
+    right_colliders = set(RIGHT_ARM_COLLIDERS) | set(hand.colliders)
     for body in spec.bodies:
         if body.name == "world":
             continue
@@ -114,7 +135,7 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
                 g.contype = g.conaffinity = 0
     spec.geom("floor").contype, spec.geom("floor").conaffinity = OBJ_TYPE, OBJ_AFF
 
-    spec.body("right_wrist_yaw_link").add_site(name="grasp", pos=list(GRASP_SITE_POS), size=[0.006, 0, 0],
+    spec.body("right_wrist_yaw_link").add_site(name="grasp", pos=list(hand.grasp_site), size=[0.006, 0, 0],
                                                rgba=[1, 0, 0, 0.6], group=4)
 
     world = spec.worldbody
@@ -147,7 +168,7 @@ def build_model(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjModel:
 class G1Ids:
     """Indices into qpos/qvel/ctrl for the joints and objects the task uses."""
 
-    def __init__(self, model: mujoco.MjModel):
+    def __init__(self, model: mujoco.MjModel, hand: Hand | None = None):
         def jq(name):
             return model.joint(name).qposadr[0]
 
@@ -158,8 +179,11 @@ class G1Ids:
         self.arm_qpos = np.array([jq(n) for n in self.arm_names])
         self.arm_dofs = np.array([jd(n) for n in self.arm_names])
         self.arm_ctrl = np.array([model.actuator(n).id for n in self.arm_names])
-        self.hand_qpos = np.array([jq(n) for n in RIGHT_HAND])
-        self.hand_ctrl = np.array([model.actuator(n).id for n in RIGHT_HAND])
+        if hand is None:  # the one the model was built with
+            hand = SHADOW if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, SHADOW.colliders[0]) >= 0 else DEX3
+        self.hand = hand
+        self.hand_qpos = np.array([jq(n) for n in hand.obs_joints])
+        self.hand_ctrl = np.array([model.actuator(n).id for n in hand.actuators])
         self.arm_range = model.jnt_range[[model.joint(n).id for n in self.arm_names]].copy()
         self.grasp_site = model.site("grasp").id
         self.hand_body = model.body("right_wrist_yaw_link").id
@@ -176,7 +200,8 @@ class G1Ids:
         self.table_geom = model.geom("table").id
         self.stand_qpos = np.zeros(model.nq)
         for name, value in STAND.items():
-            self.stand_qpos[jq(name)] = value
+            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0:  # (the Dex3's thumb, if fitted)
+                self.stand_qpos[jq(name)] = value
         self.ready_qpos = self.stand_qpos.copy()
         for name, value in READY.items():
             self.ready_qpos[jq(name)] = value

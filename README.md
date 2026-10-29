@@ -209,10 +209,10 @@ cup and the pyramid standing. Everything ran in this container (4 CPU cores, no 
   - a throw that misses can roll off the table, which ends the episode;
   - a cap that lands on the top cup's rim or next to the pyramid is then picked up close to the cups, and the
     fingers knock them.
-- **A five-fingered hand.** The Dex3 has three fingers. A human-like five-fingered hand (e.g. a Shadow-type hand
-  model on the G1's wrist) would hold and let go of an upside-down cup more like you do, and pinch the cap with
-  thumb and index finger as in your clips. Swapping it in means new grasp synergies, a new pinch and new scripted
-  experts, then new data and training: the natural next step.
+- **A five-fingered hand (in progress).** `G1TaskConfig(hand="shadow")` replaces the Dex3 with a Shadow
+  Dexterous Hand on the G1's wrist. With it, the scripted experts put both base cups down touching (11/12 and
+  12/12). Turning the top cup over doesn't work yet (0/12), and the cap pinch and thumbs-up aren't designed yet.
+  Status and next steps: [docs/HANDOFF_FIVE_FINGER.md](docs/HANDOFF_FIVE_FINGER.md). The Dex3 stays the default.
 - **What your clips gave.** 32 clips: 13 of the base cups (most showing both A and B), 10 of the top cup, 9 of
   throws. MediaPipe found the hand in only part of the frames of some clips (the hand is seen from above, often
   at the image's edge), and every demo whose reconstruction looked wrong was left out, with the reason printed by

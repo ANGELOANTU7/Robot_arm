@@ -15,8 +15,8 @@ import mujoco
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
-from robot_arm.humanoid.controller import (THUMB_DIR, G1HandController, hand_targets, pinch_frame,
-                                           rotation_error, rotvec_to_mat, site_for_pinch)
+from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch_frame, rotation_error,
+                                           rotvec_to_mat, site_for_pinch)
 from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, START_ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout,
                                         base_pair_ok, base_spacing, cap_in_cup, cup_axis, cup_grasp_point,
                                         cup_in_place, pyramid_standing, sample_layout, top_cup_resting)
@@ -72,10 +72,12 @@ class G1PyramidEnv(gym.Env):
     def _pinch_posture(self, cap_xy) -> np.ndarray:
         """Arm posture for the cap pinch (hand turned palm-down over the cap): the IK's null space pulls towards
         it while tossing, so the arm does not wander into its joint limits while turning the hand."""
+        if "pinch" not in self.ids.hand.poses:  # (a hand whose pinch isn't designed yet)
+            return self.controller.home
         u = np.array([np.cos(self.cfg.pyramid_yaw), np.sin(self.cfg.pyramid_yaw), 0.0])
-        R = pinch_frame(-u)
+        R = pinch_frame(-u, self.ids.hand)
         above_cap = np.array([*cap_xy[:2], self.cfg.table_height + 0.12])
-        return self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R), R,
+        return self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R, self.ids.hand), R,
                                      q_start=self.controller.home, iters=400)
 
     # ------------------------------------------------------------------ state
@@ -97,7 +99,7 @@ class G1PyramidEnv(gym.Env):
     @property
     def thumb_up(self) -> float:
         """Upward component of the thumb's direction (1: pointing straight up)."""
-        return float((self.hand_mat @ THUMB_DIR)[2])
+        return float((self.hand_mat @ self.ids.hand.thumb_dir)[2])
 
     @property
     def mouth(self) -> np.ndarray:
@@ -190,7 +192,7 @@ class G1PyramidEnv(gym.Env):
         for i in range(m.nu):
             d.ctrl[i] = d.qpos[m.jnt_qposadr[m.actuator_trnid[i, 0]]]
         self.pinch_ready = False
-        d.ctrl[ids.hand_ctrl] = hand_targets(-1.0)
+        d.ctrl[ids.hand_ctrl] = hand_targets(-1.0, "wrap", ids.hand)
         mujoco.mj_forward(m, d)
         mujoco.mj_step(m, d, nstep=100)  # let everything settle
 

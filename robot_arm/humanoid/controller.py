@@ -3,38 +3,15 @@
 import mujoco
 import numpy as np
 
-from robot_arm.humanoid.scene import GRASP_SITE_POS, RIGHT_HAND, G1Ids
-
-# Dex3 key poses (thumb_0, thumb_1, thumb_2, index_0, index_1, middle_0, middle_1) for the right hand.
-HAND_OPEN = np.array([0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0])  # thumb swung back for a wide opening
-HAND_CLOSED = np.array([0.0, -0.9, -1.2, 1.2, 1.3, 1.2, 1.3])
+from robot_arm.humanoid.hands import Hand
+from robot_arm.humanoid.scene import G1Ids
 
 
-# Claw pinch for the bottle cap lying on the table: palm facing down, the index finger hooked down at its base
-# joint and the thumb meeting its tip; the middle finger is curled out of the way. Found by searching joint
-# poses for fingertips that are the lowest points of the hand (5 mm below everything else), so they reach the
-# rim of a 12 mm-tall cap without the knuckles touching the table, then by pick trials in simulation.
-# Open: tips ~4 cm apart; closed: squeezed together.
-PINCH_OPEN = np.array([-0.51, -0.34, -0.44, 1.33, 0.00, 1.57, 1.75])
-PINCH_CLOSED = np.array([-0.454, -0.644, -0.116, 1.436, 0.059, 1.570, 1.750])
-# In the right_wrist_yaw_link frame: where the cap sits between the tips, the direction that must point down,
-# and the thumb-to-index axis (kept horizontal).
-PINCH_POINT = np.array([0.1275, 0.0942, 0.0258])
-PINCH_DOWN = np.array([0.283, 0.937, 0.204])
-PINCH_AXIS = np.array([-0.939, 0.242, -0.246])
-
-# Thumbs-up: the two fingers curled into a fist, the thumb straight out of the palm side. In the
-# right_wrist_yaw_link frame the thumb then points along THUMB_DIR (from its middle joint to its tip), so the
-# hand rolled a quarter turn about its fingers' axis from the side grasp has the thumb pointing up.
-THUMBS_UP = np.array([0.0, 0.4, 0.0, 1.4, 1.6, 1.4, 1.6])
-THUMB_DIR = np.array([-0.392, 0.92, -0.003])
-
-
-def pinch_frame(throw_dir: np.ndarray) -> np.ndarray:
-    """Hand orientation with the claw pinch pointing down and the thumb-index axis horizontal, across the
+def pinch_frame(throw_dir: np.ndarray, hand: Hand) -> np.ndarray:
+    """Hand orientation with the pinch pointing down and the thumb-finger axis horizontal, across the
     horizontal throw direction (so the opening fingers move sideways to the cap's flight)."""
-    g = PINCH_DOWN / np.linalg.norm(PINCH_DOWN)
-    a = PINCH_AXIS - (PINCH_AXIS @ g) * g
+    g = hand.pinch_down / np.linalg.norm(hand.pinch_down)
+    a = hand.pinch_axis - (hand.pinch_axis @ g) * g
     a /= np.linalg.norm(a)
     H = np.column_stack([g, a, np.cross(g, a)])
     n = np.cross([0.0, 0.0, 1.0], throw_dir)
@@ -43,20 +20,21 @@ def pinch_frame(throw_dir: np.ndarray) -> np.ndarray:
     return W @ H.T
 
 
-def site_for_pinch(pinch_world: np.ndarray, R: np.ndarray) -> np.ndarray:
+def site_for_pinch(pinch_world: np.ndarray, R: np.ndarray, hand: Hand) -> np.ndarray:
     """Grasp-site position that puts the hand's pinch point at `pinch_world` with hand orientation R."""
-    return pinch_world + R @ (np.asarray(GRASP_SITE_POS) - PINCH_POINT)
+    return pinch_world + R @ (np.asarray(hand.grasp_site) - hand.pinch_point)
 
 
-SHAPES = {"wrap": (HAND_OPEN, HAND_CLOSED), "pinch": (PINCH_OPEN, PINCH_CLOSED), "thumbs_up": (HAND_OPEN, THUMBS_UP)}
-
-
-def hand_targets(grip: float, shape: str = "wrap") -> np.ndarray:
-    """Hand synergy: grip in [-1, 1] (-1 open, 1 closed) -> 7 finger joint targets. `shape` is what closing
-    makes: the whole-hand wrap (cups), the fingertip pinch (the cap) or a thumbs-up."""
-    s = (np.clip(grip, -1.0, 1.0) + 1.0) / 2.0
-    lo, hi = SHAPES[shape]
-    return lo + s * (hi - lo)
+def hand_targets(grip: float, shape: str, hand: Hand) -> np.ndarray:
+    """Hand synergy: grip in [-1, 1] (-1 open, 1 closed) -> the hand's actuator targets, blended along the
+    shape's key poses (open, ..., closed). `shape` is what closing makes: the whole-hand wrap (cups), the
+    fingertip pinch (the cap) or a thumbs-up."""
+    if shape not in hand.poses:
+        raise NotImplementedError(f"The {hand.name} hand has no '{shape}' pose yet (see hands.py)")
+    keys = hand.poses[shape]
+    s = (np.clip(grip, -1.0, 1.0) + 1.0) / 2.0 * (len(keys) - 1)
+    i = min(int(s), len(keys) - 2)
+    return keys[i] + (s - i) * (keys[i + 1] - keys[i])
 
 
 def rotation_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -143,7 +121,4 @@ class G1HandController:
         qdot = (q - start) / dt if self.q_prev is not None else 0.0
         self.q_prev = q
         data.ctrl[self.ids.arm_ctrl] = q + self.lag * qdot
-        data.ctrl[self.ids.hand_ctrl] = hand_targets(grip, shape)
-
-
-assert len(HAND_OPEN) == len(RIGHT_HAND)
+        data.ctrl[self.ids.hand_ctrl] = hand_targets(grip, shape, self.ids.hand)

@@ -88,3 +88,19 @@ def test_scripted_place_expert(stage):
                 break
         wins += info["is_success"]
     assert wins >= 2  # the expert succeeds ~90-100% of the time
+
+
+def test_five_finger_hand_places_a_base_cup():
+    import dataclasses
+
+    from robot_arm.humanoid.hands import SHADOW
+    cfg = dataclasses.replace(G1_CFG, hand="shadow")
+    env = G1PyramidEnv(task="place", stage=1, cfg=cfg)
+    assert env.ids.hand is SHADOW and len(env.ids.hand_ctrl) == 18 and env.observation_space.shape == (OBS_DIM,)
+    expert = PlaceExpert(cfg)
+    obs, _ = env.reset(seed=1000)
+    for _ in range(env.max_steps):
+        obs, _, terminated, truncated, info = env.step(expert(obs))
+        if terminated or truncated:
+            break
+    assert info["is_success"]

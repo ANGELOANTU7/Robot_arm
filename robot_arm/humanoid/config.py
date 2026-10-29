@@ -18,6 +18,7 @@ class CupSpec:
 
 @dataclass(frozen=True)
 class G1TaskConfig:
+    hand: str = "dex3"  # the G1's right hand: "dex3" (Unitree's three fingers) or "shadow" (five fingers; see hands.py)
     cup: CupSpec = CupSpec()
     # The thrown object: a plastic bottle cap (a short cylinder), 2.8 cm across.
     cap_radius: float = 0.014
