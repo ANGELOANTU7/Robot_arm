@@ -196,6 +196,10 @@ def load_replay_policy(human_dir: str | Path, styles_path: str | Path | None = N
     from robot_arm.humanoid.retarget import G1ReplayPolicy
 
     demos = load_skill_demos(human_dir)
+    kept = Path(human_dir).parent / "g1_kept_demos.json"  # the demos the datasets were made from
+    if kept.exists():
+        names = {n for v in json.loads(kept.read_text()).values() for n in v}
+        demos = {k: [d for d in v if d.info["name"] in names] if k != "rejected" else v for k, v in demos.items()}
     styles_path = Path(styles_path) if styles_path else Path(human_dir).parent / "g1_styles.json"
     styles = json.loads(styles_path.read_text()) if styles_path.exists() else throw_styles(demos["toss"],
                                                                                             calibrate=False)

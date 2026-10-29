@@ -79,6 +79,9 @@ def main():
         for name, wins in unreproducible:
             print(f"  left out {name}: never placed its cup when retargeted (0 of 3 layouts)")
         print("Kept: " + ", ".join(f"{len(v)} {k}" for k, v in demos.items()))
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "g1_kept_demos.json").write_text(json.dumps(
+            {k: [d.info["name"] for d in v] for k, v in demos.items()}, indent=1))
         if args.styles:
             styles = json.loads(args.styles.read_text())
         else:

@@ -52,7 +52,7 @@ class G1TaskConfig:
     reach_bearing: tuple[float, float] = (-1.1, 0.8)
     grasp_heading: tuple[float, float] = (-0.9, 0.45)  # the hand's heading when reaching for a cup (rad)
     reach_box: tuple[float, float, float, float] = (0.22, 0.55, -0.37, 0.08)  # x and y limits (on the table)
-    pyramid_clearance: float = 0.16  # cups' centres from the pyramid's centre (the cap: 2 cm less)
+    pyramid_clearance: float = 0.16  # cups' centres from the pyramid's centre (the cap: 4 cm more)
     cup_clearance: float = 0.13  # between cups' centres
     # How precisely the pyramid must be built. As with real party cups, the top cup wedges into the V between
     # the two base cups' slanted walls rather than balancing on their bottoms, so it can sit lower and a little

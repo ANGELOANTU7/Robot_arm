@@ -339,7 +339,7 @@ class TossExpert:
         near = lambda p, tol: np.linalg.norm(p - site) < tol  # noqa: E731
         rot_err = np.linalg.norm(rotation_error(hand, frame))
         # Aligned, or as close as the joint limits allow (a few degrees off): don't wait for it forever.
-        aligned = rot_err < 0.07 or (rot_err < 0.12 and self.timer > 20)
+        aligned = rot_err < 0.07 or (rot_err < 0.12 and self.timer > 20) or (rot_err < 0.3 and self.timer > 40)
 
         # Straight up, across to above the cap, and only then turn the fingers down: turning over the pyramid
         # would sweep the fingers into the top cup.
@@ -362,8 +362,8 @@ class TossExpert:
             upright = hand_frame(float(np.arctan2(hand[1, 0], hand[0, 0])))
             goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), upright
             if np.linalg.norm(goal[:2] - site[:2]) < 0.03 and \
-                    np.linalg.norm(rotation_error(hand, upright)) < 0.3:
-                self.phase = "turn"
+                    (np.linalg.norm(rotation_error(hand, upright)) < 0.3 or self.timer > 40):
+                self.phase, self.timer = "turn", 0
         if self.phase == "turn":
             goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), frame
             if aligned:

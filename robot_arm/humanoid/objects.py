@@ -159,7 +159,7 @@ def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1Task
         cap = spot()
         if any(np.linalg.norm(c - pyr) < cfg.pyramid_clearance for c in cups):
             continue
-        if np.linalg.norm(cap - pyr) < cfg.pyramid_clearance - 0.02:
+        if np.linalg.norm(cap - pyr) < cfg.pyramid_clearance + 0.04:  # the fingers spread around it
             continue
         if any(np.linalg.norm(cups[i] - cups[j]) < cfg.cup_clearance for i in range(3) for j in range(i)):
             continue

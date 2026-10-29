@@ -27,9 +27,11 @@ def main():
     p.add_argument("--episodes", type=int, default=50)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--out", type=Path, default=Path("runs"))
+    p.add_argument("--no-scripted", action="store_true", help="leave out the scripted experts' row")
+    p.add_argument("--append", action="store_true", help="add the rows to the existing g1_results.json")
     args = p.parse_args()
 
-    policies = [("scripted experts", "scripted")]
+    policies = [] if args.no_scripted else [("scripted experts", "scripted")]
     if args.replay:
         policies.append(("retargeted human demos (replay)", f"replay:{args.replay}"))
     if args.bc:
@@ -38,6 +40,8 @@ def main():
         policies.append(("BC + PPO", f"place={args.ppo[0]},toss={args.ppo[1]}"))
 
     results = {}
+    if args.append and (args.out / "g1_results.json").exists():
+        results = json.loads((args.out / "g1_results.json").read_text())
     for name, spec in policies:
         row = {}
         for col, task, stage in COLUMNS:
