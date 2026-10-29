@@ -1,0 +1,32 @@
+{
+ "policy": "scripted",
+ "tries": [
+  {
+   "file": "toss_95000_knocked-a-placed-cup.mp4",
+   "task": "toss",
+   "seed": 95000,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 7.7
+  },
+  {
+   "file": "toss_95001_knocked-a-placed-cup.mp4",
+   "task": "toss",
+   "seed": 95001,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 0.1
+  },
+  {
+   "file": "toss_95002_knocked-a-placed-cup.mp4",
+   "task": "toss",
+   "seed": 95002,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 9.9
+  }
+ ]
+}
