@@ -203,7 +203,7 @@ class G1PyramidEnv(gym.Env):
         self.placed = {k: self.cup_pos(k) for k in range(prebuilt)}
         self.cap_was_held = False
         self.release_distance = None
-        self.misses, self.thumbs_steps, self.cap_still = 0, 0, 0
+        self.misses, self.thumbs_steps, self.cap_still, self.settled = 0, 0, 0, 0
         self.events: list[str] = []
         self.fail_reason = None
         self._phi = self._potential()
@@ -352,8 +352,11 @@ class G1PyramidEnv(gym.Env):
             centre = self.cup_pos(k) + cup_axis(d, body) * cfg.cup.height / 2
             released = not self.hand_touches(ids.cup_geoms[k]) and self.grip < 0 and \
                 np.linalg.norm(self.site_pos - centre) > 0.10
-            if placed and still and released:
+            # The top cup rests on two rims: it must stay put for half a second (one let go of badly tips over).
+            self.settled = self.settled + 1 if placed and still and released else 0
+            if self.settled >= (10 if k == 2 else 1):
                 self.placed[k] = self.cup_pos(k)
+                self.settled = 0
                 return True, False
             return False, False
         in_cup = cap_in_cup(d, ids.cap_body, ids.cup_bodies[2], cfg.cap_radius, cfg)

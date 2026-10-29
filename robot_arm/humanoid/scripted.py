@@ -357,8 +357,10 @@ class TossExpert:
         if self.phase == "neutral":
             # Upright in front of the shoulder first: after turning the top cup over the hand is upside down, and
             # turning from there straight to the pinch runs the wrist into its limits.
-            goal, frame_cmd = np.array([*NEUTRAL_XY, safe_z]), hand_frame(0.0)
-            if (near(goal, 0.03) and np.linalg.norm(rotation_error(hand, frame_cmd)) < 0.2) or self.timer > 40:
+            # Turning the hand over near the pyramid would sweep the fingers through the top cup: away first.
+            clear = np.linalg.norm(site[:2] - mouth[:2]) > 0.15
+            goal, frame_cmd = np.array([*NEUTRAL_XY, safe_z]), hand_frame(0.0) if clear else hand
+            if (near(goal, 0.03) and np.linalg.norm(rotation_error(hand, hand_frame(0.0))) < 0.2) or self.timer > 60:
                 self.phase, self.timer = "traverse", 0
         if self.phase == "traverse":
             goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), hand_frame(0.0)
