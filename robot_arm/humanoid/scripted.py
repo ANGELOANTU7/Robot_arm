@@ -15,6 +15,7 @@ BACK_OFF = 0.16  # how far the open hand slides back out of a released top cup (
 FLIP_ROLL = np.pi  # turning a held cup over: roll the hand about its fingers' axis (forearm rotation)
 FLIP_RELEASE = -1.0  # grip while letting go of a cup with the hand turned over
 THUMBS_UP_YAW = -0.3  # heading of the fist while showing the thumbs-up
+NEUTRAL_XY = (0.30, -0.22)  # in front of the right shoulder: the hand passes here, upright, before reaching for the cap
 
 
 def hand_frame(yaw: float, palm_dir: np.ndarray | None = None) -> np.ndarray:
@@ -267,7 +268,7 @@ class TossExpert:
         self.phase, self.timer = "rise", 0
         self.plan, self.aimed, self.retries = None, False, 0
         self.attempt, self.aim = 0, np.zeros(3)
-        self.miss, self.still = None, 0
+        self.miss, self.still, self.resets = None, 0, 0
 
     def next_attempt(self):
         """After a miss: aim off by the miss, and go and pick the cap up again."""
@@ -345,36 +346,38 @@ class TossExpert:
         # would sweep the fingers into the top cup.
         above_cap = self.site_for(pinch_at_cap, frame)
         above_cap[2] = max(safe_z, site[2]) if self.phase in ("rise", "traverse", "turn") else safe_z
-        if self.phase == "rise" and self.timer == 1 and site[2] < safe_z - 0.05 and self.attempt == 0:
-            # Right after letting go of the top cup the hand is still around it: slide out along the fingers first.
-            self.phase, self.back_from = "back", site.copy()
-        if self.phase == "back":
-            goal, frame_cmd = self.back_from - BACK_OFF * hand[:, 0], hand
-            if near(goal, 0.01) or self.timer > 15:
-                self.phase = "rise"
         if self.phase == "rise":
-            goal, frame_cmd = np.array([site[0], site[1], max(safe_z, site[2])]), hand
+            # The place stage ends with the hand just clear of the top cup: up, slowly and away from the cup.
+            away = site[:2] - mouth[:2]
+            away = away / max(np.linalg.norm(away), 1e-6)
+            goal, frame_cmd = np.array([*(site[:2] + 0.02 * away), max(safe_z, site[2])]), hand
+            speed = 0.02
             if site[2] > safe_z - 0.03:
-                self.phase = "traverse"
+                self.phase, self.timer = "neutral", 0
+        if self.phase == "neutral":
+            # Upright in front of the shoulder first: after turning the top cup over the hand is upside down, and
+            # turning from there straight to the pinch runs the wrist into its limits.
+            goal, frame_cmd = np.array([*NEUTRAL_XY, safe_z]), hand_frame(0.0)
+            if (near(goal, 0.03) and np.linalg.norm(rotation_error(hand, frame_cmd)) < 0.2) or self.timer > 40:
+                self.phase, self.timer = "traverse", 0
         if self.phase == "traverse":
-            # Upright on the way (after turning the top cup over, the hand is upside down): turning from there
-            # straight to the pinch runs the wrist into its limits.
-            upright = hand_frame(float(np.arctan2(hand[1, 0], hand[0, 0])))
-            goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), upright
-            if np.linalg.norm(goal[:2] - site[:2]) < 0.03 and \
-                    (np.linalg.norm(rotation_error(hand, upright)) < 0.3 or self.timer > 40):
+            goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), hand_frame(0.0)
+            if np.linalg.norm(goal[:2] - site[:2]) < 0.03 or self.timer > 40:
                 self.phase, self.timer = "turn", 0
         if self.phase == "turn":
             goal, frame_cmd = np.array([above_cap[0], above_cap[1], max(safe_z, site[2])]), frame
             if aligned:
                 self.phase, self.timer = "over", 0
+            elif self.timer > 60 and self.resets < 2:  # stuck at a joint limit: start the turn again from upright
+                self.phase, self.timer, self.resets = "neutral", 0, self.resets + 1
         if self.phase == "over":
             goal, frame_cmd = self.site_for(pinch_at_cap + [0, 0, 0.06], frame), frame
-            if near(goal, 0.01) and aligned:
-                self.phase = "down"
+            # (or as close as the arm gets: not every spot on the table is reached with the pinch exactly)
+            if (near(goal, 0.01) and aligned) or (near(goal, 0.03) and self.timer > 30):
+                self.phase, self.timer = "down", 0
         if self.phase == "down":
             goal, frame_cmd, speed = self.site_for(pinch_at_cap, frame), frame, 0.5 * cfg.max_step
-            if near(goal, 0.004) or (near(goal, 0.008) and self.timer > 20):
+            if near(goal, 0.004) or (near(goal, 0.008) and self.timer > 20) or self.timer > 40:
                 self.phase, self.timer = "pinch", 0
         if self.phase == "pinch":  # close progressively, so the cap is not flicked away
             goal, frame_cmd = self.site_for(pinch_at_cap, frame), frame

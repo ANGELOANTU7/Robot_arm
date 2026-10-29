@@ -33,11 +33,10 @@ class G1TaskConfig:
     # palm/fingers come near cup A while cup B is put down.
     pyramid_center: tuple[float, float] = (0.42, -0.06)
     pyramid_yaw: float = -2.356  # direction from base cup A to base cup B
-    # The base cups' mouths stand 2 cm apart, so the top cup's base sinks into the V between their walls and is
-    # held there. With the mouths almost touching, it only rests on two thin patches of the base cups' bottoms
-    # and the push of the opening fingers topples it front-to-back (scripted full task: 75% at 4 mm, 88-92% at
-    # 18-22 mm; at 28 mm it falls through).
-    base_gap: float = 0.02
+    # The base cups stand with their rims touching (2 mm apart), as in your pyramid: the top cup rests across their
+    # bottoms. With a 2 cm gap it tipped into the V between them when let go of upside-down (scripted top-cup
+    # placement: 46% at 2 cm, 75% touching, 88% at 2 mm).
+    base_gap: float = 0.002
     # Supply spots: each cup is approached from behind (-x) and the fingertips reach ~11 cm past it, so the top
     # cup waits further forward, clear of the corridors used for A and B.
     supply_cups: tuple[tuple[float, float], ...] = ((0.33, -0.20), (0.31, -0.37), (0.53, -0.28))  # A, B, top
@@ -54,6 +53,7 @@ class G1TaskConfig:
     reach_box: tuple[float, float, float, float] = (0.22, 0.55, -0.37, 0.08)  # x and y limits (on the table)
     pyramid_clearance: float = 0.16  # cups' centres from the pyramid's centre (the cap: 4 cm more)
     cup_clearance: float = 0.13  # between cups' centres
+    cap_max_x: float = 0.42  # the cap pinch (hand turned palm-down) is out of the arm's reach further forward
     # How precisely the pyramid must be built. As with real party cups, the top cup wedges into the V between
     # the two base cups' slanted walls rather than balancing on their bottoms, so it can sit lower and a little
     # off-centre and still stand (settling tests: up to 2.5 cm off-centre and 4 cm lower, upright). A fallen

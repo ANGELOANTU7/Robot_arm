@@ -1,0 +1,23 @@
+{
+ "policy": "replay:data/processed/human_pyramid",
+ "tries": [
+  {
+   "file": "full_95000_timeout.mp4",
+   "task": "full",
+   "seed": 95000,
+   "outcome": "timeout",
+   "reached": "turn over + place top cup",
+   "misses": 0,
+   "seconds": 50.0
+  },
+  {
+   "file": "full_95001_cap-fell-off-the-table.mp4",
+   "task": "full",
+   "seed": 95001,
+   "outcome": "cap-fell-off-the-table",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 30.8
+  }
+ ]
+}
