@@ -153,7 +153,29 @@ decaying BC term on the skill's own environment. At run time the sequencer hands
 
 ### Results
 
-RESULTS_TABLE
+Your 32 clips → 17 usable demos (see the limits below) → retargeted rollouts → one policy per skill. Each cell
+is 24 held-out layouts with the cups and the cap placed at random (`scripts/g1_results.py`, also written to
+`runs/final/g1_results.md`). The full task counts only episodes that end with the thumbs-up, the cap in the top
+cup and the pyramid standing. Everything ran in this container (4 CPU cores, no GPU).
+
+| Policy | place A | place B | place top (turned over) | throw + thumbs-up | full task |
+|---|---|---|---|---|---|
+| Scripted experts (hand-written, not learned) | 96% | 92% | 79% | 29% | 29% |
+| Your demos, retargeted and replayed (no learning) | 96% | 92% | 54% | 29% | 12% |
+| BC (one policy per skill) | 54% | 42% | 67% | 0% | 0% (6 of 24 built the pyramid and reached the throw) |
+
+- **Placing is learned from your clips; the throw is not.** BC places cup A, cup B and the turned-over top cup
+  42–67% of the time. The throw policy never lands the cap: it rarely gets the millimetre-exact pinch on the
+  cap, and only 58 successful throws (plus 222 from earlier runs) were there to learn from, all from a single
+  usable throw clip.
+- **PPO did not help this time.** A 20-iteration PPO run on the place skill (about 40 minutes) went from 67% to
+  42% at its evaluations; its best checkpoint stayed the BC one, so there is no separate row. (In an earlier
+  version, with the base cups 2 cm apart, 20 PPO iterations took the place skill from 62% to 79%.) PPO on the
+  throw, starting from a policy that never succeeds, didn't get anywhere either.
+- Missed throws are followed by re-throws, about 0.2–0.25 per episode. Most failed throws don't end in a clean
+  miss but with the pyramid knocked (the cap landing on the top cup, or the fingers hitting the cups while
+  picking up a cap that lies next to them), a cap rolling off the table, or a pinch that never closes on it.
+- **Videos of the tries**, failures included: [`sim_videos/`](sim_videos/README.md).
 
 ### Simulation shortcuts and limits, stated plainly
 
@@ -162,27 +184,43 @@ RESULTS_TABLE
 - **Where things can lie.** The cups and the cap start anywhere in a region the right hand reaches well: 22–56 cm
   from the right shoulder, from 63° to its right to 46° to its left, on the table and at most 8 cm left of
   the robot's centre line, clear of the pyramid's spot and of the path the hand takes to each cup. Cups further
-  left were pushed off the table by the approaching hand. About a third of the layouts can't fit all four objects
-  under these rules; those use the nominal spots moved by up to 3 cm.
-- **Turning the top cup over is the hardest part.** Letting go of a cup with the hand upside down is awkward for
-  the Dex3: the opening fingers push the cup, and the fingers lie over a base cup's top. The scripted expert
-  puts it down about 1 cm towards its palm, snaps the hand open and leaves upwards along the cup's wall; it
-  succeeds in about 50–70% of layouts (the rest: the top cup slides off or a base cup is knocked). A placement
-  only counts once the hand is clear of the cup.
+  left were pushed off the table by the approaching hand. The cap stays at least 20 cm from the pyramid and at
+  most 42 cm in front of the robot (further forward the palm-down pinch is out of reach). About a third of the
+  layouts can't fit all four objects under these rules; those use the nominal spots moved by up to 3 cm.
+- **Turning the top cup over.** Letting go of a cup with the hand upside down is awkward for the Dex3: the
+  opening fingers push the cup. The scripted expert puts it down about 1 cm towards its palm, snaps the hand
+  open and leaves upwards along the cup's wall; with the base cups touching it succeeds in 83–88% of layouts.
+  A placement only counts once the hand is clear of the cup, and for the top cup once it has stayed put for
+  half a second.
 - The cups' walls are 2 mm thick (real ones are about 0.5 mm) because thinner walls make contacts unreliable
   in simulation. Cup mass is 12 g and cap mass 2 g; measure yours and set them in
   `robot_arm/humanoid/config.py`.
-- The base cups stand 2 cm apart (mouth to mouth), so the top cup sinks into the V between their walls and is
-  held there. With the mouths touching, the simulated top cup rests on two thin patches of the base cups'
-  bottoms and topples a few seconds later. (This is about the simulated cups; your clips show your pyramid.)
+- **The base cups touch** (2 mm apart), as in your pyramid, and the top cup rests across their bottoms' rims.
+  An earlier version stood them 2 cm apart so the top cup would wedge into the V between them; when the top cup
+  was let go of upside down it tipped into that V instead (top-cup placement 46% at 2 cm, 75% touching, 88% at
+  2 mm). Thanks to you for spotting this.
 - A top cup counts as standing if it rests within 3 cm of the base cups' midpoint, up to 6 cm lower than their
   tops, and tilts less than 20°.
-- The robot's throw works for releases 10–16 cm from the cup. Your throws are pulled into that range: their
-  arc and wind-up are kept, their distance is not. A cap that misses and rolls off the table ends the episode.
+- **The throw is the weak part.** The robot's throw works for releases 10–16 cm from the cup; your throws are
+  pulled into that range (their arc and wind-up are kept, their distance is not). Even the scripted thrower lands
+  the cap and shows the thumbs-up in only about a quarter of tries. The `sim_videos/` show why:
+  - the 2.8 cm cap lying anywhere needs a millimetre-exact pinch, and from some spots the arm can't quite
+    reach the pinch pose;
+  - a throw that misses can roll off the table, which ends the episode;
+  - a cap that lands on the top cup's rim or next to the pyramid is then picked up close to the cups, and the
+    fingers knock them.
+- **A five-fingered hand.** The Dex3 has three fingers. A human-like five-fingered hand (e.g. a Shadow-type hand
+  model on the G1's wrist) would hold and let go of an upside-down cup more like you do, and pinch the cap with
+  thumb and index finger as in your clips. Swapping it in means new grasp synergies, a new pinch and new scripted
+  experts, then new data and training: the natural next step.
 - **What your clips gave.** 32 clips: 13 of the base cups (most showing both A and B), 10 of the top cup, 9 of
   throws. MediaPipe found the hand in only part of the frames of some clips (the hand is seen from above, often
   at the image's edge), and every demo whose reconstruction looked wrong was left out, with the reason printed by
-  `g1_retarget_demos.py`. DEMO_COUNTS
+  `g1_retarget_demos.py`. Of the demos that were reconstructed, those the robot never managed to reproduce when
+  retargeted (3 layouts, no noise) were left out too. **Used for training: 7 demos of cup A, 4 of cup B, 5 of the
+  top cup and 1 throw.** Most throws were dropped: the hand is hard to track while throwing, and seen from
+  above the cap's flight is hard to make out. The robot's re-throws after a miss are its own (aimed off by the
+  miss), as none of your clips with misses could be reconstructed reliably.
 - Seen from straight above, a throw's height and flight are the least certain part of the reconstruction: the
   release height is taken near the top cup's rim, and the flight time from the cap's speed across the table.
 

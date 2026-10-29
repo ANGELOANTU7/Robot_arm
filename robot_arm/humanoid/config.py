@@ -40,7 +40,7 @@ class G1TaskConfig:
     # Supply spots: each cup is approached from behind (-x) and the fingertips reach ~11 cm past it, so the top
     # cup waits further forward, clear of the corridors used for A and B.
     supply_cups: tuple[tuple[float, float], ...] = ((0.33, -0.20), (0.31, -0.37), (0.53, -0.28))  # A, B, top
-    cap_spot: tuple[float, float] = (0.28, -0.06)  # the cap lies flat on the table here, near where it is thrown from
+    cap_spot: tuple[float, float] = (0.22, -0.05)  # nominal cap spot: 20 cm in front of the pyramid, where the pinch reaches
     layout_jitter: float = 0.015
     # Like in your clips, the cups (all mouth-down) and the cap start anywhere within the right hand's reach
     # (instead of at supply_cups / cap_spot): distance and bearing from the right shoulder, clear of the pyramid

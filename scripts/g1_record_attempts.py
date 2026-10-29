@@ -69,8 +69,9 @@ def write_index(root: Path) -> None:
         if not meta.exists():
             continue
         info = json.loads(meta.read_text())
-        lines += [f"## {folder.name}", "", f"Policy: `{info['policy']}`", "",
-                  "| Video | Task | Outcome | Reached | Missed throws |", "|---|---|---|---|---|"]
+        note = (folder / "notes.txt").read_text().strip() if (folder / "notes.txt").exists() else ""
+        lines += [f"## {folder.name}", "", f"Policy: `{info['policy']}`", ""] + ([note, ""] if note else [])
+        lines += ["| Video | Task | Outcome | Reached | Missed throws |", "|---|---|---|---|---|"]
         for r in info["tries"]:
             lines.append(f"| [{r['file']}]({folder.name}/{r['file']}) | {r['task']} | {r['outcome']} | {r['reached']} "
                          f"| {r['misses']} |")

@@ -2,9 +2,22 @@
 
 Recorded with `scripts/g1_record_attempts.py`: every try is kept, failures included. Left: side view, right: front view. The stage the robot is in and the outcome are written on the video.
 
+## 06_learned_BC_policies_full_task
+
+Policy: `place=runs/v3/g1_place_bc/policy.pt,toss=runs/v3/g1_toss_bc/policy.pt`
+
+The place and throw policies learned (BC) from your clips: placing works part of the time; the learned throw doesn't get the cap pinched.
+
+| Video | Task | Outcome | Reached | Missed throws |
+|---|---|---|---|---|
+| [full_95010_timeout.mp4](06_learned_BC_policies_full_task/full_95010_timeout.mp4) | full | timeout | place cup A | 0 |
+| [full_95011_timeout.mp4](06_learned_BC_policies_full_task/full_95011_timeout.mp4) | full | timeout | throw the cap | 0 |
+
 ## 05_scripted_throw_and_rethrows
 
 Policy: `scripted`
+
+Recorded before the cap's fallback spot was moved 20 cm away from the pyramid: in these tries the cap lies right next to the pyramid and the fingers hit it while picking the cap up.
 
 | Video | Task | Outcome | Reached | Missed throws |
 |---|---|---|---|---|
@@ -26,6 +39,8 @@ Policy: `scripted`
 
 Policy: `place=runs/g1_place_ppo2/policy.pt,toss=scripted`
 
+Recorded with the base cups 2 cm apart, before they were changed to touch (the top cup then often tipped into the gap between them).
+
 | Video | Task | Outcome | Reached | Missed throws |
 |---|---|---|---|---|
 | [place_95000_knocked-a-placed-cup.mp4](03_learned_place_policy_top_cup/place_95000_knocked-a-placed-cup.mp4) | place | knocked-a-placed-cup | turn over + place top cup | 0 |
@@ -35,6 +50,8 @@ Policy: `place=runs/g1_place_ppo2/policy.pt,toss=scripted`
 
 Policy: `replay:data/processed/human_pyramid`
 
+Recorded with the base cups 2 cm apart, before they were changed to touch (the top cup then often tipped into the gap between them).
+
 | Video | Task | Outcome | Reached | Missed throws |
 |---|---|---|---|---|
 | [full_95000_timeout.mp4](02_retargeted_from_your_clips_full_task/full_95000_timeout.mp4) | full | timeout | turn over + place top cup | 0 |
@@ -43,6 +60,8 @@ Policy: `replay:data/processed/human_pyramid`
 ## 01_scripted_experts_full_task
 
 Policy: `scripted`
+
+Recorded with the base cups 2 cm apart, before they were changed to touch (the top cup then often tipped into the gap between them).
 
 | Video | Task | Outcome | Reached | Missed throws |
 |---|---|---|---|---|
