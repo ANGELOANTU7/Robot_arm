@@ -62,8 +62,11 @@ class G1HandController:
     orientation, with a null-space pull towards a posture (the ready posture, or the pinch posture)."""
 
     def __init__(self, model: mujoco.MjModel, ids: G1Ids, damping: float = 0.02, iters: int = 8,
-                 rot_weight: float = 0.3, posture_gain: float = 0.02, waist_weight: float = 3.0):
+                 rot_weight: float = 0.3, posture_gain: float = 0.02, waist_weight: float = 3.0,
+                 elbow_clearance: float = 0.22, elbow_gain: float = 5.0):
         self.model, self.ids = model, ids
+        self.elbow_clearance, self.elbow_gain = elbow_clearance, elbow_gain
+        self.torso_body, self.elbow_body = model.body("torso_link").id, model.body("right_elbow_link").id
         self.damping, self.iters, self.rot_weight, self.posture_gain = damping, iters, rot_weight, posture_gain
         self.home = ids.ready_qpos[ids.arm_qpos].copy()
         self.posture = self.home  # null-space target; the env switches it for the pinch
@@ -98,10 +101,23 @@ class G1HandController:
             JJt = J @ J.T + self.damping ** 2 * np.eye(6)
             dq = W @ (J.T @ np.linalg.solve(JJt, err))
             null = np.eye(len(q)) - W @ J.T @ np.linalg.solve(JJt, J)
-            dq += null @ (self.posture_gain * (self.posture - q))
+            dq += null @ (self.posture_gain * (self.posture - q) + self._elbow_push())
             q = np.clip(q + dq, self.lo, self.hi)
             s.qpos[ids.arm_qpos] = q
         return q
+
+    def _elbow_push(self) -> np.ndarray:
+        """Joint motion taking the elbow back out to the robot's right. The torso and upper arm have no collision
+        geometry, so nothing else stops the arm folding across the chest when the hand works close in front of it."""
+        ids, s = self.ids, self._scratch
+        side = s.xmat[self.torso_body].reshape(3, 3)[:, 1]  # the robot's left
+        inside = (s.xpos[self.elbow_body] - s.xpos[self.torso_body]) @ side + self.elbow_clearance
+        if inside <= 0:
+            return np.zeros(len(ids.arm_qpos))
+        mujoco.mj_jacBody(self.model, s, self._jacp, None, self.elbow_body)
+        push = -self.elbow_gain * inside * (side @ self._jacp[:, ids.arm_dofs])
+        push[:3] = 0.0  # the waist carries the torso with the elbow, so it would only twist the robot
+        return push
 
     def fk(self, qpos: np.ndarray, q_arm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         s = self._scratch

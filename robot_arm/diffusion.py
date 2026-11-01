@@ -28,6 +28,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+torch.backends.mkldnn.enabled = False  # oneDNN dies with SIGFPE on batched Conv1d on EPYC 9555 (torch 2.15)
+
 from robot_arm.policy import mlp
 from robot_arm.tasks import get_task
 

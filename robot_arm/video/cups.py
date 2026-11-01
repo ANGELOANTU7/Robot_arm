@@ -73,21 +73,30 @@ def two_cup_centres(mask: np.ndarray, camera: Camera, z: float, radius: float) -
     ys, xs = np.nonzero(mask)
     if len(xs) < 200:
         return None
-    # The pair's direction from the blob's lower edge (the rims nearest the camera, on the table): the whole blob
-    # mapped onto the table plane is stretched in depth by the cups' walls when seen at an angle.
-    cols = np.unique(xs)
-    low = np.array([[c, ys[xs == c].max()] for c in cols], float)
-    P = backproject(camera, low, z)[:, :2]
-    mean = P.mean(axis=0)
-    axis = np.linalg.svd(P - mean, full_matrices=False)[2][0]
+    # The blob mapped onto the table plane is stretched away from the camera's ground point by the cups' walls, so
+    # its shape doesn't give the pair's direction: try every direction and keep the two circles that follow the
+    # outline's near side best and stand a rim diameter apart.
     out = backproject(camera, outline(mask), z)[:, :2]
-    side = (out - mean) @ axis
-    centres = []
-    for sign in (-1.0, 1.0):
-        pts = out[side * sign > 0]
-        if len(pts) < 20:
-            return None
-        centres.append(fit_circle(pts, radius, mean + sign * radius * axis, camera.center_table[:2]))
+    mean = out.mean(axis=0)
+    ground = camera.center_table[:2]
+    best, best_cost = None, np.inf
+    for angle in np.radians(np.arange(0, 180, 10)):
+        axis = np.array([np.cos(angle), np.sin(angle)])
+        side = (out - mean) @ axis
+        if (side > 0).sum() < 20 or (side < 0).sum() < 20:
+            continue
+        cs = [fit_circle(out[side * sign > 0], radius, mean + sign * radius * axis, ground) for sign in (-1.0, 1.0)]
+        res = []
+        for c, sign in zip(cs, (-1.0, 1.0)):
+            pts = out[side * sign > 0]
+            res.append(np.abs(np.linalg.norm(pts[(pts - c) @ (ground - c) > 0] - c, axis=1) - radius))
+        res = np.concatenate(res)
+        cost = np.median(res) + abs(np.linalg.norm(cs[0] - cs[1]) - 2 * radius) if len(res) else np.inf
+        if cost < best_cost:
+            best, best_cost = cs, cost
+    if best is None:
+        return None
+    centres = best
     return tuple(np.array([c[0], c[1], z]) for c in centres)
 
 

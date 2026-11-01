@@ -1,0 +1,149 @@
+{
+ "policy": "place=runs/chunk_2k/policy.pt,toss=runs/toss4k_dp_e80/policy.pt",
+ "tries": [
+  {
+   "file": "full_20000_success.mp4",
+   "task": "full",
+   "seed": 20000,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 30.2
+  },
+  {
+   "file": "full_20001_knocked-a-placed-cup.mp4",
+   "task": "full",
+   "seed": 20001,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 39.1
+  },
+  {
+   "file": "full_20002_knocked-a-placed-cup.mp4",
+   "task": "full",
+   "seed": 20002,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 27.4
+  },
+  {
+   "file": "full_20003_success.mp4",
+   "task": "full",
+   "seed": 20003,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 32.9
+  },
+  {
+   "file": "full_20004_knocked-a-placed-cup.mp4",
+   "task": "full",
+   "seed": 20004,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 35.1
+  },
+  {
+   "file": "full_20005_success.mp4",
+   "task": "full",
+   "seed": 20005,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 32.8
+  },
+  {
+   "file": "full_20006_success.mp4",
+   "task": "full",
+   "seed": 20006,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 33.5
+  },
+  {
+   "file": "full_20007_success.mp4",
+   "task": "full",
+   "seed": 20007,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 34.7
+  },
+  {
+   "file": "full_20008_timeout.mp4",
+   "task": "full",
+   "seed": 20008,
+   "outcome": "timeout",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 50.0
+  },
+  {
+   "file": "full_20009_knocked-a-placed-cup.mp4",
+   "task": "full",
+   "seed": 20009,
+   "outcome": "knocked-a-placed-cup",
+   "reached": "throw the cap",
+   "misses": 0,
+   "seconds": 33.1
+  },
+  {
+   "file": "full_20010_timeout.mp4",
+   "task": "full",
+   "seed": 20010,
+   "outcome": "timeout",
+   "reached": "throw the cap",
+   "misses": 1,
+   "seconds": 50.0
+  },
+  {
+   "file": "full_20011_timeout.mp4",
+   "task": "full",
+   "seed": 20011,
+   "outcome": "timeout",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 50.0
+  },
+  {
+   "file": "full_20012_success.mp4",
+   "task": "full",
+   "seed": 20012,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 32.3
+  },
+  {
+   "file": "full_20013_success.mp4",
+   "task": "full",
+   "seed": 20013,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 38.4
+  },
+  {
+   "file": "full_20014_success.mp4",
+   "task": "full",
+   "seed": 20014,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 33.2
+  },
+  {
+   "file": "full_20015_success.mp4",
+   "task": "full",
+   "seed": 20015,
+   "outcome": "success",
+   "reached": "thumbs-up",
+   "misses": 0,
+   "seconds": 34.2
+  }
+ ]
+}

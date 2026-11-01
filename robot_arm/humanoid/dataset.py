@@ -254,17 +254,17 @@ def summarize(meta: list[dict]) -> dict:
         ms = [m for m in meta if m["task"] == task]
         row = {"episodes": len(ms)}
         if task == "full":
-            for s in range(5):
+            for s in range(4):
                 row[f"stage{s}"] = round(float(np.mean([s in m["done_stages"] for m in ms])), 3)
         else:
-            last = 4 if task == "toss" else None  # the throw, then the thumbs-up
+            last = 3 if task == "toss" else None  # the throw
             row["success"] = round(float(np.mean([(last in m["done_stages"]) if last else len(m["done_stages"]) > 0
                                                   for m in ms])), 3)
         out[task] = row
     tossed = [m for m in meta if m["task"] == "toss" or (m["task"] == "full" and 2 in m["done_stages"])]
     by_style = {}
     for m in tossed:
-        by_style.setdefault(m["style"], []).append(4 in m["done_stages"])
+        by_style.setdefault(m["style"], []).append(3 in m["done_stages"])
     out["toss_success_by_style"] = {int(k): round(float(np.mean(v)), 2) for k, v in sorted(by_style.items())}
     return out
 

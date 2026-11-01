@@ -69,6 +69,19 @@ class HandTracker:
         world_m = np.array([[lm.x, lm.y, lm.z] for lm in result.hand_world_landmarks[i]])
         return HandDetection(image_px, world_m, scores[i], result.handedness[i][0].category_name)
 
+    def both(self, frame_bgr: np.ndarray, timestamp_ms: int) -> list[HandDetection]:
+        """Every hand in the frame (up to two)."""
+        import mediapipe as mp
+
+        h, w = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        result = self._landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
+                                                   timestamp_ms)
+        return [HandDetection(np.array([[lm.x * w, lm.y * h] for lm in px]),
+                              np.array([[lm.x, lm.y, lm.z] for lm in world]),
+                              hd[0].score, hd[0].category_name)
+                for px, world, hd in zip(result.hand_landmarks, result.hand_world_landmarks, result.handedness)]
+
     def close(self):
         self._landmarker.close()
 

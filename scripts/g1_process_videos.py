@@ -10,11 +10,14 @@ The skill comes from the clip's folder (part_a: the two base cups, part_b: the t
 <name>_trajectory.png (3D palm path, closure, grasp and release).
 
 --focal-px is for the clip's full resolution (an iPhone 16 main camera at 1x filming 1080x1920: about 1740).
-Frames are scaled down to --max-width for tracking; hand tracking runs at full resolution.
+Frames are scaled down to --max-width for tracking; hand tracking runs at full resolution only with --hands
+(see scripts/g1_track_landmarks.py).
 """
 
 import argparse
 import json
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import cv2
@@ -71,6 +74,10 @@ def main():
     p.add_argument("--check", action="store_true", help="only check markers and color masks on frame 0")
     p.add_argument("--handheld", action="store_true", help="the phone was held in the hand: warp every frame onto "
                    "a fixed camera using the marker sheet (it must stay in view most of the time)")
+    p.add_argument("--second-cup", default="", help="comma-separated folders of base clips that put down cup B next "
+                   "to a standing cup A")
+    p.add_argument("--single-cup", default="", help="comma-separated folders of base clips that put down one cup")
+    p.add_argument("--workers", type=int, default=1, help="clips processed at once")
     args = p.parse_args()
     colors = SkillColors(args.cup_color, args.cap_color)
     props = Props(args.cup_height_cm / 100, args.cup_mouth_cm / 200, args.cup_base_cm / 200, args.lip_mm / 1000,
@@ -78,31 +85,41 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
     folders = dict(item.split("=") for item in args.folders.split(",")) if args.folders else {}
-    summary = {}
-    for video in args.videos:
-        if args.check:
+    if args.check:
+        for video in args.videos:
             check(video, args.out, colors)
-            continue
-        skill = args.skill or folders.get(video.parent.name)
-        hands = None
-        if args.hands is not None and (args.hands / f"{video.parent.name}_{video.stem}.npz").exists():
-            z = np.load(args.hands / f"{video.parent.name}_{video.stem}.npz")
-            hands = {"hand_px": z["hand_px"], "hand_world": z["hand_world"]}
-        try:
-            demos, calib = process_skill_video(video, args.out, skill, colors, props, marker_mm=args.marker_mm,
-                                               focal_px=args.focal_px, hfov_deg=args.hfov_deg, hands=hands,
-                                               max_width=args.max_width, handheld=args.handheld)
-        except Exception as e:  # keep going with the other clips
-            print(f"{video.name}: FAILED - {e}")
-            summary[video.name] = {"error": str(e)}
-            continue
-        for n, demo in enumerate(demos):
-            row = demo_row(demo, calib)
-            name = video.name if len(demos) == 1 else f"{video.name} ({'AB'[n]})"
-            summary[name] = row
-            print(f"{name}: {row}")
-    if not args.check:
-        (args.out / "summary.json").write_text(json.dumps(summary, indent=2))
+        return
+    job = partial(process_clip, args=args, folders=folders, colors=colors, props=props)
+    summary = {}
+    with ProcessPoolExecutor(args.workers) as pool:
+        for rows in pool.map(job, args.videos):
+            summary.update(rows)
+    (args.out / "summary.json").write_text(json.dumps(summary, indent=2))
+
+
+def process_clip(video: Path, args, folders: dict, colors: SkillColors, props: Props) -> dict:
+    skill = args.skill or folders.get(video.parent.name)
+    second = video.parent.name in args.second_cup.split(",")
+    single = video.parent.name in args.single_cup.split(",")
+    hands = None
+    if args.hands is not None and (args.hands / f"{video.parent.name}_{video.stem}.npz").exists():
+        z = np.load(args.hands / f"{video.parent.name}_{video.stem}.npz")
+        hands = {"hand_px": z["hand_px"], "hand_world": z["hand_world"]}
+    try:
+        demos, calib = process_skill_video(video, args.out, skill, colors, props, marker_mm=args.marker_mm,
+                                           focal_px=args.focal_px, hfov_deg=args.hfov_deg, hands=hands,
+                                           max_width=args.max_width, handheld=args.handheld, second_cup=second,
+                                           single_cup=single)
+    except Exception as e:  # keep going with the other clips
+        print(f"{video.name}: FAILED - {e}", flush=True)
+        return {video.name: {"error": str(e)}}
+    rows = {}
+    for n, demo in enumerate(demos):
+        row = demo_row(demo, calib)
+        name = video.name if len(demos) == 1 else f"{video.name} ({'AB'[n]})"
+        rows[name] = row
+        print(f"{name}: {row}", flush=True)
+    return rows
 
 
 def demo_row(demo, calib) -> dict:
@@ -110,6 +127,9 @@ def demo_row(demo, calib) -> dict:
            "grasp_s": round(demo.t_grasp, 2), "release_s": round(demo.t_release, 2),
            "scale": round(demo.info["scale"], 3), "anchor_err_cm": round(100 * demo.info["grasp_anchor_err"], 1),
            "markers": int(calib["markers_found"])}
+    if "other_x" in demo.info:
+        row["base_spacing_cm"] = round(100 * float(np.hypot(*(demo.obj_end[:2] - [demo.info["other_x"],
+                                                                                  demo.info["other_y"]]))), 1)
     if demo.skill != "toss":
         row["cup_moved_cm"] = round(100 * float(np.linalg.norm(demo.obj_end[:2] - demo.obj_start[:2])), 1)
     else:

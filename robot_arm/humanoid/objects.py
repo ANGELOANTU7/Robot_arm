@@ -163,7 +163,7 @@ def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1Task
 
     for _ in range(tries):
         cups = [spot() for _ in range(3)]
-        cap = spot()
+        cap = np.asarray(cfg.cap_spot) + rng.uniform(-0.03, 0.03, 2) if cfg.cap_near_spot else spot()
         if cap[0] > cfg.cap_max_x:
             continue
         if any(np.linalg.norm(c - pyr) < cfg.pyramid_clearance for c in cups):

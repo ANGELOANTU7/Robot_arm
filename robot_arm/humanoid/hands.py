@@ -22,6 +22,9 @@ class Hand:
     pinch_point: np.ndarray = field(default_factory=lambda: np.zeros(3))  # where the cap sits between the tips
     pinch_down: np.ndarray = field(default_factory=lambda: np.zeros(3))  # must point down while pinching
     pinch_axis: np.ndarray = field(default_factory=lambda: np.zeros(3))  # thumb-to-finger axis (kept horizontal)
+    throw_side: float = 1.0  # the cap is released on cup B's side of the pyramid (1) or on cup A's (-1)
+    throw_long: float = 0.0  # the throw is aimed this far past the mouth: the fingers let go early, at 0.05 s a step
+    pick_turn: float = 0.0  # the cap is picked up with the hand turned this far from its heading for the throw (rad)
     thumb_dir: np.ndarray = field(default_factory=lambda: np.zeros(3))  # the thumb's direction in the thumbs-up
     thumbs_up_roll: float = 0.0  # roll about the fingers from the side grasp that turns the thumb up
     expert: dict = field(default_factory=dict)  # PlaceExpert settings this hand needs (see scripted.py)
@@ -124,7 +127,8 @@ SHADOW = Hand(
     # the top cup with its fingers across the base cups' line (along it, the opening thumb lands on a base cup), so
     # the line runs at 0.2 - 90 degrees. The supply spots stay 16 cm clear of that pyramid.
     task={"grasp_height_frac": 0.77, "top_grasp_height_frac": 0.23, "pyramid_center": (0.48, -0.16),
-          "pyramid_yaw": 0.2 - np.pi / 2, "supply_cups": ((0.30, -0.18), (0.30, -0.35), (0.34, 0.02))},
+          "pyramid_yaw": 0.2 - np.pi / 2, "supply_cups": ((0.30, -0.18), (0.30, -0.35), (0.34, 0.02)),
+          "cap_spot": (0.255, -0.03), "cap_near_spot": True},
     corridor=(-0.20, 0.10, -0.12, 0.03),
     poses={
         # Open: pads 12 cm apart (3 cm room on each side of a cup); closed: 2.7 cm, a squeeze through a 6 cm cup.
@@ -153,11 +157,15 @@ SHADOW = Hand(
     pinch_point=np.array([0.1646, 0.0595, 0.0388]),
     pinch_down=np.array([0.263, 0.462, 0.847]),
     pinch_axis=np.array([0.964, -0.164, -0.210]),
+    pick_turn=0.8,  # the throw's heading leaves the arm at its joint limits over the near cap spots
+    throw_long=0.03,
+    throw_side=-1.0,  # thrown from cup A's side: the pinch's heading from B's side is out of this arm's reach
     # Cups are put down with the fingers pointing forward (the hand on a base cup's right, away from cup A), the
     # top cup with them across the base cups' line; a placed top cup is left upwards and out along its sloping wall
     # (rising straight up, the little finger catches the cup where it widens). The cup is turned over rolling the
     # hand one way round: the other way the shoulder runs into its joint limit (8/8 vs 0/8 placed).
-    expert={"place_yaw": 0.0, "top_yaw_rel": np.pi / 2, "pre_dist": 0.10, "flip_taper_sign": 0.0, "flip_offset": 0.0,
+    # Heading 1.3 rad, not pi/2: with the elbow kept off the chest, pi/2 runs two wrist joints into their limits.
+    expert={"place_yaw": 0.0, "top_yaw_rel": 1.3, "pre_dist": 0.10, "flip_taper_sign": 0.0, "flip_offset": 0.0,
             "flip_exit_out": 2.5, "flip_dir": 1.0},
     menagerie=("shadow_hand", "right_hand.xml"),
     # The Shadow palm's own frame has the fingers along +z, the palm facing -y and the thumb on the +x side:

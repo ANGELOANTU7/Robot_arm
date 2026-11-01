@@ -76,7 +76,8 @@ class G1PyramidEnv(gym.Env):
         if "pinch" not in self.ids.hand.poses:  # (a hand whose pinch isn't designed yet)
             return self.controller.home
         u = np.array([np.cos(self.cfg.pyramid_yaw), np.sin(self.cfg.pyramid_yaw), 0.0])
-        R = pinch_frame(-u, self.ids.hand)
+        c, s = np.cos(self.ids.hand.pick_turn), np.sin(self.ids.hand.pick_turn)
+        R = pinch_frame(-self.ids.hand.throw_side * np.array([c * u[0] - s * u[1], s * u[0] + c * u[1], 0.0]), self.ids.hand)
         above_cap = np.array([*cap_xy[:2], self.cfg.table_height + 0.12])
         return self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R, self.ids.hand), R,
                                      q_start=self.controller.home, iters=400)
@@ -326,7 +327,7 @@ class G1PyramidEnv(gym.Env):
         terminated = failed
         if success:
             self.events.append(f"stage{self.stage}@{self.steps}")
-            if (self.task == "full" and self.stage < THUMBS_UP) or (self.task == "toss" and self.stage == TOSS):
+            if self.task == "full" and self.stage < TOSS:  # the task ends with the cap in the cup: no thumbs-up
                 self.stage += 1
                 self._phi = self._potential()
                 stage_done = False

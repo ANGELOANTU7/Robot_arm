@@ -314,10 +314,12 @@ class TossExpert:
     def release_plan(self, mouth: np.ndarray, axis: np.ndarray):
         """Release point (of the cap) and velocity so a free cap passes through the mouth after flight_time."""
         c, s = np.cos(self.release_bearing), np.sin(self.release_bearing)
-        side = np.array([c * axis[0] - s * axis[1], s * axis[0] + c * axis[1], 0.0])
+        side = self.hand.throw_side * np.array([c * axis[0] - s * axis[1], s * axis[0] + c * axis[1], 0.0])
         R = mouth + self.release_dist * side + [0, 0, self.release_height]
         t = self.flight_time
-        v = (mouth + self.aim_offset + self.aim - R + np.array([0, 0, 0.5 * GRAVITY * t * t])) / t
+        along = mouth[:2] - R[:2]
+        long = self.hand.throw_long * np.array([*along / max(np.linalg.norm(along), 1e-6), 0.0])
+        v = (mouth + self.aim_offset + self.aim + long - R + np.array([0, 0, 0.5 * GRAVITY * t * t])) / t
         return R, v
 
     def pinch_frame(self, throw_dir: np.ndarray) -> np.ndarray:
@@ -333,7 +335,7 @@ class TossExpert:
         R = hand_frame(THUMBS_UP_YAW) @ roll_x(self.hand.thumbs_up_roll)
         goal = np.array([spot[0], spot[1], max(spot[2], site[2])]) if site[2] < spot[2] - 0.02 else spot
         err = np.linalg.norm(rotation_error(obs_hand_mat(obs), R))
-        if np.linalg.norm(spot - site) < 0.03 and err < 0.15:
+        if np.linalg.norm(spot - site) < 0.03 and err < 0.2:  # (as close as this arm gets at the spot)
             self.phase = "thumbs_up"
         grip = 1.0 if self.phase == "thumbs_up" else -1.0
         return to_action(obs, goal, R, grip, cfg.toss_max_step, cfg, speed=0.03)
@@ -358,6 +360,9 @@ class TossExpert:
         R_pt, v = self.plan
         throw_dir = np.array([v[0], v[1], 0.0]) / np.linalg.norm(v[:2])
         frame = self.pinch_frame(throw_dir)
+        if self.phase in ("rise", "neutral", "traverse", "turn", "over", "down", "pinch", "lift"):
+            c, s = np.cos(self.hand.pick_turn), np.sin(self.hand.pick_turn)
+            frame = self.pinch_frame(np.array([c * throw_dir[0] - s * throw_dir[1], s * throw_dir[0] + c * throw_dir[1], 0.0]))
         hand = obs_hand_mat(obs)
         safe_z = T + 2 * cfg.cup.height + 0.12  # the hand stays well above the pyramid while it turns
         # The fingertips skim the table as they close, so they meet the cap low on its sides (from pick trials).
@@ -404,7 +409,7 @@ class TossExpert:
         if self.phase == "over":
             goal, frame_cmd = self.site_for(pinch_at_cap + [0, 0, 0.06], frame), frame
             # (or as close as the arm gets: not every spot on the table is reached with the pinch exactly)
-            if (near(goal, 0.01) and aligned) or (near(goal, 0.03) and self.timer > 30):
+            if (near(goal, 0.01) and aligned) or (near(goal, 0.03) and self.timer > 30) or self.timer > 60:
                 self.phase, self.timer = "down", 0
         if self.phase == "down":
             goal, frame_cmd, speed = self.site_for(pinch_at_cap, frame), frame, 0.5 * cfg.max_step
@@ -419,7 +424,7 @@ class TossExpert:
         if self.phase == "lift":
             goal, frame_cmd, grip = self.lift_goal, frame, 1.0
             if site[2] > self.lift_goal[2] - 0.06 and cap[2] < T + 2 * cfg.cap_half_height + 0.004 and \
-                    self.retries < 2:
+                    self.retries < 5:
                 self.phase, self.timer, self.retries = "over", 0, self.retries + 1  # the cap stayed behind: retry
             elif near(goal, 0.015) or site[2] > self.lift_goal[2] - 0.03:
                 self.phase, self.timer = "windup", 0

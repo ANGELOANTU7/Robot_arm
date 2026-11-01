@@ -55,6 +55,7 @@ class G1TaskConfig:
     reach_box: tuple[float, float, float, float] = (0.22, 0.55, -0.37, 0.08)  # x and y limits (on the table)
     pyramid_clearance: float = 0.16  # cups' centres from the pyramid's centre (the cap: 4 cm more)
     cup_clearance: float = 0.13  # between cups' centres
+    cap_near_spot: bool = False  # the cap always lies within 3 cm of cap_spot (this hand's pinch reaches little else)
     cap_max_x: float = 0.42  # the cap pinch (hand turned palm-down) is out of the arm's reach further forward
     # How precisely the pyramid must be built. As with real party cups, the top cup wedges into the V between
     # the two base cups' slanted walls rather than balancing on their bottoms, so it can sit lower and a little

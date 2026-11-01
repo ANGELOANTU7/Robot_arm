@@ -12,6 +12,7 @@ the hand landmarks and the object tracks into the demonstration.
 """
 
 from dataclasses import asdict, dataclass, field
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,8 @@ from robot_arm.video.reconstruct import _fill_gaps, _smooth
 
 GRAVITY = 9.81
 PINCH_TIPS = (4, 8)  # thumb tip and index fingertip: the cap is held between them
+GRIP_HEIGHTS = (0.3, 0.95)  # where a mouth-down cup can be held, as fractions of its height
+MIN_PALM_HEIGHT = 0.03  # the hand's size is noisy: the palm stays above the table
 RELEASE_GAP = 1.2  # the cap has left the fingertips once it is this many of its radii from them (in the image)
 
 
@@ -68,6 +71,7 @@ class SkillTrack:
     obj_r_px: np.ndarray  # (T,) blob radius in pixels
     marks: dict = field(default_factory=dict)
     in_cup_px: np.ndarray | None = None
+    info: dict = field(default_factory=dict)  # copied into the demo's info
 
 
 @dataclass
@@ -133,7 +137,7 @@ def _motion_window(px: np.ndarray, r_px: float, fps: float) -> tuple[int, int]:
     if not sustained.any():
         raise RuntimeError("The object never visibly moves; check the color setting.")
     first = int(np.argmax(sustained))
-    away = np.nonzero(np.linalg.norm(px - px[-1], axis=1) > thr)[0]
+    away = np.nonzero(np.linalg.norm(px - px[-1], axis=1) > max(0.2 * r_px, 5.0))[0]  # at rest, not just close by
     settle = int(away[-1]) + 1 if len(away) else first
     return first, max(first, min(settle, len(px) - 1))
 
@@ -186,14 +190,17 @@ def _inside(poly: np.ndarray | None, p: np.ndarray) -> bool:
     return cv2.pointPolygonTest(poly.astype(np.float32).reshape(-1, 1, 2), (float(p[0]), float(p[1])), False) >= 0
 
 
-def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Props = Props(),
-                      palm_offset: float = 0.05, grasp_frac: float = 0.5) -> SkillDemo:
+def depth_at_height(camera: Camera, ray: np.ndarray, z: float) -> float:
+    """Depth at which a camera ray (with third component 1) crosses the horizontal plane at height z."""
+    a, b = camera.to_table(np.zeros(3))[2], (ray @ camera.R)[2]
+    return float((z - a) / b)
+
+
+def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Props = Props()) -> SkillDemo:
     """Turn detections of one skill clip into a SkillDemo.
 
-    The depth scale (MediaPipe's hand-size guess) is fixed with the grasp anchor: while the hand closes on the
-    object, the object is in the hand. For a cup the palm centre is `palm_offset` from its axis along the palm
-    normal (side grasp, about `grasp_frac` up the cup); for the cap, the point between the thumb tip and the
-    index fingertip is at its centre. The cap starts lying flat on the table.
+    Objects are held between the thumb and the index finger, so the point midway between their tips is on the cap
+    or on the cup's axis. That anchors the hand's depth, see below.
     """
     T = len(track.t)
     fps = 1 / np.median(np.diff(track.t))
@@ -210,22 +217,22 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
     obj_px = _fill_gaps(track.obj_px, obj_seen)
     obj_r = float(np.nanmedian(track.obj_r_px))
 
-    # Palm path in the camera frame (up to MediaPipe's depth scale), orientation and closure.
+    # Palm image path, orientation and closure. Depth: MediaPipe's own is off by a factor of about 1.7 and jumps from
+    # frame to frame; the hand's size in the image is steady, and is tied to metres below.
     palm_cam = np.array([palm_center_cam(hand_px[i], hand_world[i], camera.K) for i in range(T)])
-    depth = _smooth(palm_cam[:, 2], fps, 0.15 if toss else 0.4)
     uv = (palm_cam / palm_cam[:, 2:3]) @ camera.K.T
     uv = _smooth(uv[:, :2], fps, 0.08 if toss else 0.15)
     rays = np.linalg.solve(camera.K, np.column_stack([uv, np.ones(T)]).T).T
-    palm_cam = rays * depth[:, None]
+    size = sum(np.linalg.norm(hand_px[:, a] - hand_px[:, b], axis=1) for a, b in combinations(PALM_POINTS, 2))
+    inv_size = 1 / _smooth(size, fps, 0.15 if toss else 0.25)
     rot_cam = np.array([palm_frame(w) for w in hand_world])
     rot_table = smooth_rotations(np.einsum("ij,tjk->tik", camera.R.T, rot_cam), fps, 0.1 if toss else 0.2)
     clos = _smooth(np.array([closure(w) for w in hand_world]), fps, 0.2)
     lo, hi = np.percentile(clos, 10), np.percentile(clos, 90)
     mid = (lo + hi) / 2
-    # The cap is held between the thumb tip and the index fingertip: that point relative to the palm centre
-    # (MediaPipe's world landmarks are camera-aligned), so it shares the palm's smoothing and depth scale.
-    tips = hand_world[:, list(PINCH_TIPS)].mean(axis=1) - hand_world[:, PALM_POINTS].mean(axis=1)
-    pinch_cam = palm_cam + _smooth(tips, fps, 0.05)
+    # The point midway between the thumb tip and the index fingertip: on the cap, or on a held cup's axis.
+    tips_uv = _smooth(hand_px[:, list(PINCH_TIPS)].mean(axis=1), fps, 0.05)
+    tip_rays = np.linalg.solve(camera.K, np.column_stack([tips_uv, np.ones(T)]).T).T
     info = {"fps": fps, "hand_seen": float(ok.mean())}
     marks = track.marks
 
@@ -247,8 +254,7 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
             info["axis_x"], info["axis_y"] = (marks["axis"][:2] / np.linalg.norm(marks["axis"][:2])).tolist()
         grasp, first_move = final["grasp"], final["lift"]
         anchor_frames = slice(throws[0]["grasp"], throws[0]["lift"] + 1)  # the first pick: the cap's known start
-        point_cam, anchor, offset, normal = pinch_cam[anchor_frames].mean(axis=0), obj_start, 0.0, np.zeros(3)
-        weight = np.ones(3)
+        anchors = [(anchor_frames, obj_start, np.array([props.cap_height / 2]))]
     else:
         first_move, settle = _motion_window(obj_px, obj_r, fps)
         # Grasp: the last time the closure rises through its midpoint before the object moves.
@@ -258,22 +264,34 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
             raise RuntimeError("Could not tell where the moved cup started or ended; keep your hand out of view "
                                "for the first and last second.")
         obj_start, obj_end = np.asarray(marks["start"]), np.asarray(marks["end"])
-        anchor_frames = slice(grasp, max(grasp, first_move) + 1)
-        point_cam, anchor = palm_cam[anchor_frames].mean(axis=0), obj_start + [0, 0, grasp_frac * props.cup_height]
-        offset, normal = palm_offset, rot_table[anchor_frames, :, 2].mean(axis=0)
-        weight = np.array([1.0, 1.0, 0.1])  # a cup can be held at any height
+        # Release: the hand opens after the cup has come to rest at its new place.
+        after = np.nonzero(clos[settle:] < mid)[0]
+        release = settle + int(after[0]) if len(after) else settle
+        grips = np.linspace(GRIP_HEIGHTS[0], GRIP_HEIGHTS[1], 14) * props.cup_height  # above the mouth
+        put = obj_end[2] + props.cup_height - grips if skill == "place_top" else grips
+        anchors = [(slice(grasp, max(grasp, first_move) + 1), obj_start, grips),
+                   (slice(max(0, release - int(0.1 * fps)), release + 1), obj_end, put)]
 
-    # Depth scale: the hand's grasp point lands on the anchor during the grasp.
-    scales = np.linspace(0.5, 2.0, 301)
-    pts = camera.to_table(scales[:, None] * point_cam) + offset * normal
-    err = (((pts - anchor) ** 2) * weight).sum(axis=1)
-    scale = float(scales[np.argmin(err)])
-    palm = camera.to_table(scale * palm_cam)
-    info.update({"scale": scale, "grasp_anchor_err": float(np.sqrt(err.min()))})
+    # Depth scale: at the grasp (and the release) the fingertips' ray meets the object, at a height the object
+    # allows. That gives the depth there; how far the ray passes from the object is the check on it.
+    ks, errs, frames = [], [], []
+    for span, target, heights in anchors:
+        ray = tip_rays[span].mean(axis=0)
+        depths = np.array([depth_at_height(camera, ray, z) for z in heights])
+        miss = np.linalg.norm(camera.to_table(depths[:, None] * ray)[:, :2] - target[:2], axis=1)
+        best = int(np.argmin(miss))
+        ks.append(depths[best] / inv_size[span].mean())
+        errs.append(float(miss[best]))
+        frames.append(int(np.mean(np.arange(T)[span])))
+    k = np.exp(np.interp(np.arange(T), frames, np.log(ks))) if len(ks) > 1 else np.full(T, ks[0])
+    depth = np.minimum(k * inv_size, [depth_at_height(camera, r, MIN_PALM_HEIGHT) for r in rays])
+    palm = camera.to_table(rays * depth[:, None])
+    pinch_cam = tip_rays * depth[:, None]
+    info.update({"scale": float(ks[0] / np.median(k)), "grasp_anchor_err": errs[0], "release_anchor_err": errs[-1]})
 
     release_vel, release_pos = np.zeros(3), np.zeros(3)
     if toss:
-        pinch = camera.to_table(scale * pinch_cam)
+        pinch = camera.to_table(pinch_cam)
         for k, th in enumerate(throws):
             p0, v0 = _fit_throw(track, camera, pinch, th, fps, props.top_bottom_z + props.cup_height,
                                 looking_down(camera))
@@ -290,10 +308,6 @@ def reconstruct_skill(track: SkillTrack, camera: Camera, skill: str, props: Prop
         if run is not None and (run[1] - run[0]) >= 0.2 * fps:
             info["thumbs_up_start"] = float(track.t[after[run[0]]] - track.t[0])
             info["thumbs_up_end"] = float(track.t[after[run[1] - 1]] - track.t[0])
-    else:
-        # Release: the hand opens after the cup has come to rest at its new place.
-        after = np.nonzero(clos[settle:] < mid)[0]
-        release = settle + int(after[0]) if len(after) else settle
     return SkillDemo(skill, track.t - track.t[0], palm, rot_table, clos, obj_start, obj_end,
                      float(track.t[grasp] - track.t[0]), float(track.t[release] - track.t[0]),
                      release_vel, release_pos, info)

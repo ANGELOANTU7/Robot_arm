@@ -45,10 +45,26 @@ def largest_component(mask: np.ndarray, min_area: int = 200) -> np.ndarray | Non
     return labels == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
 
 
-def still_mask(frames: list[np.ndarray], color: str) -> np.ndarray:
-    """Pixels of the color in most of the given (still) frames."""
+def table_mask(frame: np.ndarray) -> np.ndarray:
+    """The table's outline in the image, from its wood colour, to leave out red or blue things around it (a
+    shirt's pattern, a bag). All of the image if there is no wooden table in view."""
+    hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (9, 9), 0), cv2.COLOR_BGR2HSV)
+    wood = cv2.inRange(hsv, np.array((6, 30, 170)), np.array((26, 200, 255)))  # brighter than skin
+    wood = cv2.morphologyEx(wood, cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
+    table = largest_component(wood, min_area=int(0.1 * wood.size))
+    if table is None:
+        return np.ones(frame.shape[:2], bool)
+    ys, xs = np.nonzero(table)
+    hull = cv2.convexHull(np.column_stack([xs, ys]).astype(np.int32))
+    mask = np.zeros(frame.shape[:2], np.uint8)
+    cv2.fillPoly(mask, [hull], 1)
+    return mask > 0
+
+
+def still_mask(frames: list[np.ndarray], color: str, where: np.ndarray | bool = True) -> np.ndarray:
+    """Pixels of the color in most of the given (still) frames, inside `where`."""
     votes = sum((color_mask(f, color) > 0).astype(np.int32) for f in frames)
-    return votes * 2 > len(frames)
+    return (votes * 2 > len(frames)) & where
 
 
 def sheet_mask(camera: Camera, shape: tuple[int, int], margin: float = 0.015) -> np.ndarray:
@@ -92,13 +108,63 @@ def track_hands(frames: list[np.ndarray], fps: float) -> dict:
     return {"hand_px": hand_px, "hand_world": hand_world}
 
 
+def track_two_hands(frames: list[np.ndarray], fps: float) -> dict:
+    """Both hands in every frame, as two continuous tracks (T, 2, 21, ...): a hand stays in its slot from frame to
+    frame by the nearest wrist. NaN where a slot's hand isn't found."""
+    T = len(frames)
+    hand_px, hand_world = np.full((T, 2, 21, 2), np.nan), np.full((T, 2, 21, 3), np.nan)
+    last = np.full((2, 2), np.nan)
+    jump = 0.25 * frames[0].shape[1]
+    tracker = HandTracker()
+    for i, frame in enumerate(frames):
+        dets = tracker.both(frame, int(round(i * 1000 / fps)))[:2]
+        cost = np.array([[np.linalg.norm(d.image_px[0] - last[s]) for s in range(2)] for d in dets]).reshape(-1, 2)
+        seen = ~np.isnan(last).any(axis=1)
+        if not seen.any() and dets:  # slot 0 for the upper hand in the image
+            order = sorted(range(len(dets)), key=lambda k: dets[k].image_px[0, 1])
+            pairs = [(k, n) for n, k in enumerate(order)]
+        elif len(dets) == 2:
+            keep = np.nan_to_num(cost, nan=jump)
+            pairs = [(0, 0), (1, 1)] if keep[0, 0] + keep[1, 1] <= keep[0, 1] + keep[1, 0] else [(0, 1), (1, 0)]
+        elif dets:
+            s = int(np.argmin(np.nan_to_num(cost[0], nan=jump)))
+            pairs = [(0, s)]
+        else:
+            pairs = []
+        for k, s in pairs:
+            hand_px[i, s], hand_world[i, s] = dets[k].image_px, dets[k].world_m
+            last[s] = dets[k].image_px[0]
+    tracker.close()
+    return {"hand_px": hand_px, "hand_world": hand_world}
+
+
+def working_hand(hands: dict, obj_px: np.ndarray, fps: float) -> tuple[dict, dict]:
+    """The hand track that is with the object while it moves (never by MediaPipe's left/right label). Falls back
+    to the object's nearest track over the whole clip if it hardly moves."""
+    seen = ~np.isnan(obj_px[:, 0])
+    step = max(1, int(0.1 * fps))
+    speed = np.full(len(obj_px), 0.0)
+    speed[step:] = np.nan_to_num(np.linalg.norm(obj_px[step:] - obj_px[:-step], axis=1))
+    moving = seen & (speed >= max(np.percentile(speed[seen], 75), 1e-6))
+    dist = np.linalg.norm(hands["hand_px"][:, :, :9].mean(axis=2) - obj_px[:, None], axis=2)  # (T, 2)
+    both_seen = ~np.isnan(dist).any(axis=1)
+    frames = moving & both_seen if (moving & both_seen).sum() >= 5 else seen
+    d = np.nanmedian(dist[frames], axis=0)
+    d = np.nan_to_num(d, nan=np.inf)
+    s = int(np.argmin(d))
+    return {"hand_px": hands["hand_px"][:, s], "hand_world": hands["hand_world"][:, s]}, \
+        {"hand_slot": s, "hand_margin_px": float(d[1 - s] - d[s]) if np.isfinite(d).all() else -1.0}
+
+
 def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillColors, camera: Camera,
-                props: Props = Props(), hands: dict | None = None) -> SkillTrack:
+                props: Props = Props(), hands: dict | None = None, second_cup: bool = False) -> SkillTrack:
     """Hand landmarks per frame (or `hands`, cached: hand_px, hand_world), the moved cup's blob centre (place) or
-    the cap's centre (toss), and the marks from the still frames at the start and end (see SkillTrack)."""
+    the cap's centre (toss), and the marks from the still frames at the start and end (see SkillTrack).
+    `second_cup`: a place_base clip of cup B, with cup A already standing where B ends up (marks["other"])."""
     T = len(frames)
     still = max(3, int(0.3 * fps))
-    first, last = still_mask(frames[:still], colors.cups), still_mask(frames[-still:], colors.cups)
+    table = table_mask(frames[0])
+    first, last = still_mask(frames[:still], colors.cups, table), still_mask(frames[-still:], colors.cups, table)
     marks, in_cup_px, static = {}, None, None
     kernel = np.ones((7, 7), np.uint8)
     on_table = lambda c: None if c is None else np.array([c[0], c[1], 0.0])  # noqa: E731
@@ -117,6 +183,8 @@ def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillC
             marks["start"] = on_table(cup_centre(start, camera, props.lip, props.mouth_radius))
         if skill == "place_base" and end is not None:
             marks["end"] = on_table(cup_centre(end, camera, props.lip, props.mouth_radius))
+        if second_cup:
+            place_beside_standing_cup(marks, first, last, start, end, camera, props)
         if skill == "place_top":
             moved = cv2.dilate(start.astype(np.uint8), kernel) > 0 if start is not None else np.zeros_like(first)
             bases = largest_component(first & ~moved)
@@ -134,27 +202,31 @@ def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillC
     px_per_m = float(np.linalg.norm(ends[1] - ends[0]) * 100)
     cap_area = np.pi * (props.cap_radius * px_per_m) ** 2
     hands = track_hands(frames, fps) if hands is None else hands
-    hand_px = np.full((T, 21, 2), np.nan)
-    hand_world = np.full((T, 21, 3), np.nan)
-    hand_px[:], hand_world[:] = hands["hand_px"][:T], hands["hand_world"][:T]
     obj_px = np.full((T, 2), np.nan)
     obj_r = np.full(T, np.nan)
     last_cap, missing = None, 0
     for i, frame in enumerate(frames):
         if skill == "toss":
             near = last_cap if missing < int(0.1 * fps) else None  # search everywhere after losing it
+            blue = cv2.bitwise_and(color_mask(frame, colors.cap), table.astype(np.uint8) * 255)
             cap = detect_blob(frame, colors.cap, min_area=0.2 * cap_area, max_area=4 * cap_area, near=near,
-                              max_jump=0.12 * frame.shape[1], compact=True)
+                              max_jump=0.12 * frame.shape[1], compact=True, mask=blue)
             if cap is not None:
                 obj_px[i], obj_r[i], last_cap, missing = cap.center, cap.radius, cap.center, 0
             else:
                 missing += 1
         else:
-            moving = ((color_mask(frame, colors.cups) > 0) & ~static).astype(np.uint8) * 255
+            moving = ((color_mask(frame, colors.cups) > 0) & ~static & table).astype(np.uint8) * 255
             cup = detect_blob(frame, colors.cups, min_area=300, mask=moving)
             if cup is not None:
                 obj_px[i], obj_r[i] = cup.center, cup.radius
-    return SkillTrack(np.arange(T) / fps, hand_px, hand_world, obj_px, obj_r, marks, in_cup_px)
+    picked = {}
+    if hands["hand_px"].ndim == 4:  # both hands were tracked
+        hands, picked = working_hand(hands, obj_px, fps)
+    hand_px = np.full((T, 21, 2), np.nan)
+    hand_world = np.full((T, 21, 3), np.nan)
+    hand_px[:], hand_world[:] = hands["hand_px"][:T], hands["hand_world"][:T]
+    return SkillTrack(np.arange(T) / fps, hand_px, hand_world, obj_px, obj_r, marks, in_cup_px, picked)
 
 
 def components(mask: np.ndarray, min_area: int = 400, n: int = 2) -> list[np.ndarray]:
@@ -162,6 +234,31 @@ def components(mask: np.ndarray, min_area: int = 400, n: int = 2) -> list[np.nda
     k, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8))
     order = [1 + int(i) for i in np.argsort(-stats[1:, cv2.CC_STAT_AREA]) if stats[1 + i, cv2.CC_STAT_AREA] >= min_area]
     return [labels == i for i in order[:n]]
+
+
+def place_beside_standing_cup(marks: dict, first: np.ndarray, last: np.ndarray, start: np.ndarray | None,
+                              end: np.ndarray | None, camera: Camera, props: Props, reach: float = 0.03) -> None:
+    """Set marks["other"] to the standing cup that touches the moved cup's end spot, and refine marks["end"] with
+    it: where both cups form one red blob, their centres come from splitting it, as in track_base_pair."""
+    if end is None:
+        raise RuntimeError("Second cup: no end spot found.")
+    ends = camera.project(np.array([[0.0, 0, 0], [0.01, 0, 0]]))
+    px_per_m = float(np.linalg.norm(ends[1] - ends[0]) * 100)
+    gap = cv2.distanceTransform((~end).astype(np.uint8), cv2.DIST_L2, 5)
+    moved = cv2.dilate(start.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0 if start is not None else 0 * first
+    standing = components(first & ~moved, n=6)
+    near = [(float(gap[m].min()), i) for i, m in enumerate(standing)]
+    if not near or min(near)[0] > reach * px_per_m:
+        raise RuntimeError("Second cup: no standing cup touches the end spot.")
+    cup_a = standing[min(near)[1]]
+    other = cup_centre(cup_a, camera, props.lip, props.mouth_radius)
+    n, labels = cv2.connectedComponents(last.astype(np.uint8))
+    blob = labels == np.bincount(labels[end & last].ravel(), minlength=n)[1:].argmax() + 1
+    pair = two_cup_centres(blob, camera, props.lip, props.mouth_radius) if (blob & cup_a).any() else None
+    if pair is not None:
+        i = int(np.linalg.norm(pair[1][:2] - other[:2]) < np.linalg.norm(pair[0][:2] - other[:2]))
+        other, marks["end"] = pair[i], np.array([pair[1 - i][0], pair[1 - i][1], 0.0])
+    marks["other"] = np.array([other[0], other[1], 0.0])
 
 
 def track_base_pair(frames: list[np.ndarray], fps: float, colors: SkillColors, camera: Camera,
@@ -242,11 +339,13 @@ def process_skill_video(path: str | Path, out_dir: str | Path, skill: str | None
                         colors: SkillColors = SkillColors(), props: Props = Props(), marker_mm: float = 50.0,
                         focal_px: float | None = None, hfov_deg: float | None = None, debug: bool = True,
                         hands: dict | None = None, max_width: int = 1280, handheld: bool = False,
-                        pad: float = 0.15) -> tuple[SkillDemo, dict]:
+                        pad: float = 0.15, second_cup: bool = False,
+                        single_cup: bool = False) -> tuple[SkillDemo, dict]:
     """`hands`: hand landmarks tracked earlier for this clip at its full resolution (hand_px, hand_world), to
     skip MediaPipe. `focal_px` is for the clip's full resolution too; frames wider than `max_width` are
     scaled down (a 1080x1920 clip of 900 frames is 6 GB in memory). `handheld`: the phone moved during the
-    clip; the frames are first warped onto one fixed camera (see stabilize.py), `pad` larger on each side."""
+    clip; the frames are first warped onto one fixed camera (see stabilize.py), `pad` larger on each side.
+    `single_cup`: a base clip that puts down one cup only; `second_cup`: that cup is B, see track_skill."""
     path, out_dir = Path(path), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     skill = skill or skill_from_name(path)
@@ -267,10 +366,12 @@ def process_skill_video(path: str | Path, out_dir: str | Path, skill: str | None
     camera, calib_info = calibrate(frames[: int(fps)], marker_mm=marker_mm, focal_px=focal_px, hfov_deg=hfov_deg)
     calib_info.update(stab_info)
     np.savez(out_dir / f"{path.stem}_camera.npz", **camera.as_dict())
-    hands = track_hands(frames, fps) if hands is None else hands
-    pieces = track_base_pair(frames, fps, colors, camera, props, hands) if skill == "place_base" else []
+    two_cups = skill == "place_base" and not (single_cup or second_cup)
+    if hands is None:
+        hands = track_hands(frames, fps) if two_cups else track_two_hands(frames, fps)
+    pieces = track_base_pair(frames, fps, colors, camera, props, hands) if two_cups else []
     if not pieces:  # one cup moved (or one cup thrown, with any re-throws)
-        pieces = [track_skill(frames, fps, skill, colors, camera, props, hands)]
+        pieces = [track_skill(frames, fps, skill, colors, camera, props, hands, second_cup)]
     demos, errors = [], []
     for n, track in enumerate(pieces):
         try:
@@ -279,6 +380,7 @@ def process_skill_video(path: str | Path, out_dir: str | Path, skill: str | None
             errors.append(e)
             continue
         demo.info.update({f"calib_{k}": float(v) for k, v in calib_info.items() if isinstance(v, (int, float))})
+        demo.info.update(track.info)
         if "other" in track.marks:
             demo.info["other_x"], demo.info["other_y"] = track.marks["other"][:2].tolist()
         name = path.stem if len(pieces) == 1 else f"{path.stem}_{'ab'[n]}"

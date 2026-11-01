@@ -2,6 +2,29 @@
 
 Recorded with `scripts/g1_record_attempts.py`: every try is kept, failures included. Left: side view, right: front view. The stage the robot is in and the outcome are written on the video.
 
+## 07_learned_full_sequence
+
+Policy: `place=runs/chunk_2k/policy.pt,toss=runs/toss4k_dp_e80/policy.pt`
+
+| Video | Task | Outcome | Reached | Missed throws |
+|---|---|---|---|---|
+| [full_20000_success.mp4](07_learned_full_sequence/full_20000_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20001_knocked-a-placed-cup.mp4](07_learned_full_sequence/full_20001_knocked-a-placed-cup.mp4) | full | knocked-a-placed-cup | throw the cap | 0 |
+| [full_20002_knocked-a-placed-cup.mp4](07_learned_full_sequence/full_20002_knocked-a-placed-cup.mp4) | full | knocked-a-placed-cup | throw the cap | 0 |
+| [full_20003_success.mp4](07_learned_full_sequence/full_20003_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20004_knocked-a-placed-cup.mp4](07_learned_full_sequence/full_20004_knocked-a-placed-cup.mp4) | full | knocked-a-placed-cup | throw the cap | 0 |
+| [full_20005_success.mp4](07_learned_full_sequence/full_20005_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20006_success.mp4](07_learned_full_sequence/full_20006_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20007_success.mp4](07_learned_full_sequence/full_20007_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20008_timeout.mp4](07_learned_full_sequence/full_20008_timeout.mp4) | full | timeout | thumbs-up | 0 |
+| [full_20009_knocked-a-placed-cup.mp4](07_learned_full_sequence/full_20009_knocked-a-placed-cup.mp4) | full | knocked-a-placed-cup | throw the cap | 0 |
+| [full_20010_timeout.mp4](07_learned_full_sequence/full_20010_timeout.mp4) | full | timeout | throw the cap | 1 |
+| [full_20011_timeout.mp4](07_learned_full_sequence/full_20011_timeout.mp4) | full | timeout | thumbs-up | 0 |
+| [full_20012_success.mp4](07_learned_full_sequence/full_20012_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20013_success.mp4](07_learned_full_sequence/full_20013_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20014_success.mp4](07_learned_full_sequence/full_20014_success.mp4) | full | success | thumbs-up | 0 |
+| [full_20015_success.mp4](07_learned_full_sequence/full_20015_success.mp4) | full | success | thumbs-up | 0 |
+
 ## 06_learned_BC_policies_full_task
 
 Policy: `place=runs/v3/g1_place_bc/policy.pt,toss=runs/v3/g1_toss_bc/policy.pt`
