@@ -1,5 +1,6 @@
 """Constants for the G1 cup-pyramid task. Distances in metres, world frame: x forward, y left, z up."""
 
+import os
 from dataclasses import dataclass
 
 
@@ -105,4 +106,14 @@ class G1TaskConfig:
         return self.table_height
 
 
-G1_CFG = G1TaskConfig()
+def task_config(hand: str = "dex3") -> G1TaskConfig:
+    """The task with `hand`, with the values that hand needs (Hand.task: where it holds the cups, where the
+    pyramid goes)."""
+    from robot_arm.humanoid.hands import get_hand
+
+    return G1TaskConfig(hand=hand, **get_hand(hand).task)
+
+
+# The hand every env, expert and evaluation uses by default; G1_HAND=shadow selects the five-fingered hand
+# everywhere, including in worker processes.
+G1_CFG = task_config(os.environ.get("G1_HAND", "dex3"))

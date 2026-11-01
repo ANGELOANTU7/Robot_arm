@@ -7,6 +7,7 @@ from pathlib import Path
 import imageio.v2 as imageio
 import numpy as np
 
+from robot_arm.humanoid import trylog
 from robot_arm.humanoid.envs import OBS_STAGE, TOSS, G1PyramidEnv
 
 
@@ -50,19 +51,24 @@ def make_policy(spec: str, device: str = "cpu"):
 
 def _episode(args):
     task, stage, spec, seed, video, camera = args
-    env = G1PyramidEnv(task=task, stage=stage, render_mode="rgb_array" if video else None, camera=camera)
+    render = {"render_mode": "rgb_array"} if video else trylog.render_kwargs()
+    env = G1PyramidEnv(task=task, stage=stage, camera=camera, **render)
     policy = make_policy(spec)
     if hasattr(policy, "start_at"):  # replay: cycle through the human demos across episodes
         policy.start_at(seed)
     obs, _ = env.reset(seed=seed)
     policy.reset()
+    tries = trylog.TryRecorder(env, f"{task}{'' if stage is None else stage}",
+                               spec.replace("runs/", "").replace("/policy.pt", "")[:70])
     frames = [env.render()] if video else []
     for t in range(env.max_steps):
         obs, _, terminated, truncated, info = env.step(policy(obs))
+        tries.step(t)
         if video:
             frames.append(env.render())
         if terminated or truncated:
             break
+    tries.finish(info, seed)
     if video:
         Path(video).parent.mkdir(parents=True, exist_ok=True)
         imageio.mimsave(video, frames, fps=env.metadata["render_fps"], macro_block_size=1)

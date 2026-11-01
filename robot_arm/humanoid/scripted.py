@@ -14,6 +14,7 @@ GRAVITY = 9.81
 OPEN_STEPS = 3  # control steps to open the hand fully (see release_rate)
 BACK_OFF = 0.16  # how far the open hand slides back out of a released top cup (the fingertips reach ~11 cm past it)
 FLIP_ROLL = np.pi  # turning a held cup over: roll the hand about its fingers' axis (forearm rotation)
+FLIP_RATE = 0.1  # rad per control step when the roll is made a step at a time (PlaceExpert's flip_dir)
 FLIP_RELEASE = -1.0  # grip while letting go of a cup with the hand turned over
 THUMBS_UP_YAW = -0.3  # heading of the fist while showing the thumbs-up
 NEUTRAL_XY = (0.30, -0.22)  # in front of the right shoulder: the hand passes here, upright, before reaching for the cap
@@ -93,9 +94,13 @@ class PlaceExpert:
     def __init__(self, cfg: G1TaskConfig = G1_CFG, yaw: float | None = None, place_yaw: float = 0.0,
                  top_place_yaw: float = 0.0, pre_dist: float = 0.16, drop: float = 0.014,
                  flip_taper_sign: float = -1.0, flip_wait: int = 0, flip_exit_rise: float = 0.0,
-                 flip_exit_speed: float = 1.0, flip_offset: float = 0.012, flip_exit_out: float | None = 0.5):
+                 flip_exit_speed: float = 1.0, flip_offset: float = 0.012, flip_exit_out: float | None = 0.5,
+                 align_tol: float = 0.006, top_yaw_rel: float | None = None, flip_dir: float | None = None):
         """`yaw`: hand heading for the grasp (None: away from the shoulder, towards the cup); `place_yaw` and
         `top_place_yaw`: heading while putting a base cup / the top cup down (the hand turns while carrying).
+        `flip_dir`: turn the top cup over a step at a time, rolling the hand this way round (+1 / -1) about its
+        fingers' axis. None: aim straight for the turned-over orientation; half a turn away, which way round the
+        hand goes is then down to small differences (one way can end at the arm's joint limits).
         Settings the hand needs (`Hand.expert`) replace the defaults unless they are given here."""
         given = {k: v for k, v in locals().items() if k not in ("self", "cfg")}
         defaults = PlaceExpert.__init__.__kwdefaults__ or dict(zip(PlaceExpert.__init__.__code__.co_varnames[2:],
@@ -107,6 +112,7 @@ class PlaceExpert:
                                                                             "pre_dist", "drop"))
         flip_taper_sign, flip_wait, flip_exit_rise = given["flip_taper_sign"], given["flip_wait"], given["flip_exit_rise"]
         flip_exit_speed, flip_offset, flip_exit_out = given["flip_exit_speed"], given["flip_offset"], given["flip_exit_out"]
+        self.align_tol, self.top_yaw_rel, self.flip_dir = given["align_tol"], given["top_yaw_rel"], given["flip_dir"]
         self.cfg, self.yaw, self.pre_dist, self.drop = cfg, yaw, pre_dist, drop
         self.place_yaw, self.top_place_yaw = place_yaw, top_place_yaw
         self.flip_taper_sign, self.flip_wait = flip_taper_sign, flip_wait
@@ -135,7 +141,11 @@ class PlaceExpert:
             self.flip = bool(final_up and cup_axis[2] < 0)
             self.yaw_g = reach_heading(cup_pos, cfg) if self.yaw is None else self.yaw
             self.yaw_p = self.top_place_yaw if k == 2 else self.place_yaw
-        xh, xh_p = hand_frame(self.yaw_g)[:, 0], hand_frame(self.yaw_p)[:, 0]
+            if k == 2 and self.top_yaw_rel is not None:  # relative to the line from base cup A to base cup B
+                a, b = obs_cup(obs, 0)[0], obs_cup(obs, 1)[0]
+                yaw = np.arctan2(b[1] - a[1], b[0] - a[0]) + self.top_yaw_rel
+                self.yaw_p = float((yaw + np.pi) % (2 * np.pi) - np.pi)
+        xh_p = hand_frame(self.yaw_p)[:, 0]
         if self.flip:
             # The palm lies along the cup's sloping wall as it will once the cup is turned over (mirror of a
             # mouth-up grasp), then the hand rolls half a turn. A cup is round, so turning the hand about the
@@ -147,6 +157,7 @@ class PlaceExpert:
             R_grasp = grasp_frame(self.yaw_g, final_up, cfg)
             R_place = grasp_frame(self.yaw_p, final_up, cfg)
         R = R_place if self.flipped else R_grasp
+        approach = hand_frame(self.yaw_g) @ np.asarray(get_hand(cfg.hand).approach)  # the hand's way onto the cup
         final_frac = cfg.top_grasp_height_frac if k == 2 else cfg.grasp_height_frac
         # Grip height from the cup's table side as it stands now: the same spot on the cup before and after a flip.
         frac = final_frac if (cup_axis[2] > 0) == final_up else 1 - final_frac
@@ -161,7 +172,7 @@ class PlaceExpert:
         # High enough that the held cup (hanging frac * h below the hand) clears cups standing on the table.
         carry_z = T + h + final_frac * h + 0.04
         flip_z = T + h + 0.16  # turning over, the cup sweeps about 8 cm around the grip
-        pre = grasp - self.pre_dist * xh
+        pre = grasp - self.pre_dist * approach
         self.timer += 1
         grip = -1.0
         near = lambda p, tol: np.linalg.norm(p - site) < tol  # noqa: E731
@@ -198,6 +209,8 @@ class PlaceExpert:
                 self.phase, self.timer = "flip", 0
         if self.phase == "flip":  # then roll the hand over about its fingers' axis
             goal, grip, R = flip_at, 1.0, R_place
+            if self.flip_dir is not None:
+                R = hand_frame(self.yaw_p) @ taper @ roll_x(self.flip_dir * min(FLIP_ROLL, FLIP_RATE * self.timer))
             err = np.linalg.norm(rotation_error(obs_hand_mat(obs), R_place))
             if err < 0.08 or (self.timer > 25 and err < 0.2) or (self.timer > 50 and err < 0.4):
                 self.phase, self.flipped, self.timer = "carry", True, 0  # or as close as the joint limits allow
@@ -212,7 +225,8 @@ class PlaceExpert:
         if self.phase == "carry":
             goal, grip = np.array([*(target_tp[:2] + cup_offset[:2]), carry_z]), 1.0
             off = np.linalg.norm(cup_tp[:2] - target_tp[:2])
-            if off < 0.006 or (self.timer > 20 and off < 0.012):
+            if off < self.align_tol or (self.timer > 20 and off < 2 * self.align_tol) or \
+                    (self.timer > 40 and off < 0.012):
                 self.phase = "lower"
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0

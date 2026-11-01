@@ -69,6 +69,8 @@ def main():
     p.add_argument("--focal-px", type=float, help="camera focal length in pixels (at the clip's resolution)")
     p.add_argument("--hfov-deg", type=float, help="camera horizontal field of view, if focal length unknown")
     p.add_argument("--check", action="store_true", help="only check markers and color masks on frame 0")
+    p.add_argument("--handheld", action="store_true", help="the phone was held in the hand: warp every frame onto "
+                   "a fixed camera using the marker sheet (it must stay in view most of the time)")
     args = p.parse_args()
     colors = SkillColors(args.cup_color, args.cap_color)
     props = Props(args.cup_height_cm / 100, args.cup_mouth_cm / 200, args.cup_base_cm / 200, args.lip_mm / 1000,
@@ -89,7 +91,7 @@ def main():
         try:
             demos, calib = process_skill_video(video, args.out, skill, colors, props, marker_mm=args.marker_mm,
                                                focal_px=args.focal_px, hfov_deg=args.hfov_deg, hands=hands,
-                                               max_width=args.max_width)
+                                               max_width=args.max_width, handheld=args.handheld)
         except Exception as e:  # keep going with the other clips
             print(f"{video.name}: FAILED - {e}")
             summary[video.name] = {"error": str(e)}

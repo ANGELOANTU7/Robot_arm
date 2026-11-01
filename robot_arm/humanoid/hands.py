@@ -25,6 +25,18 @@ class Hand:
     thumb_dir: np.ndarray = field(default_factory=lambda: np.zeros(3))  # the thumb's direction in the thumbs-up
     thumbs_up_roll: float = 0.0  # roll about the fingers from the side grasp that turns the thumb up
     expert: dict = field(default_factory=dict)  # PlaceExpert settings this hand needs (see scripted.py)
+    # How the hand reaches a cup, as a direction in the expert's grasp frame (x: the heading the hand points along,
+    # z: up, the cup's axis): the Dex3 slides in along its fingers; a hand that holds the cup in front of its palm
+    # can come down onto it from above (-z).
+    approach: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    # How high the grasp site passes over the top of a cup standing on the table while the hand is empty (the retargeted
+    # paths, retarget.plan_place): the open hand's reach below the site, and some margin.
+    clearance: float = 0.07
+    # G1TaskConfig values this hand needs (config.task_config): where it holds the cups, where the pyramid goes.
+    task: dict = field(default_factory=dict)
+    # Where the hand and forearm go while picking a cup, relative to it: (behind, ahead) along the reach heading and
+    # (right, left) of it. Nothing else may lie there when a cup is picked (objects.sample_layout).
+    corridor: tuple[float, float, float, float] = (-0.24, 0.12, -0.06, 0.06)
     menagerie: tuple[str, str] | None = None  # (folder, xml) of a hand that replaces the Dex3
     mount_pos: tuple[float, float, float] = (0.0, 0.0, 0.0)  # where its root body goes on the wrist
     mount_quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
@@ -76,6 +88,11 @@ SHADOW_ACTUATORS = ("THJ5", "THJ4", "THJ3", "THJ2", "THJ1", "FFJ4", "FFJ3", "FFJ
 SHADOW_PREFIX = "sh_rh_"
 
 
+# The middle, ring and little fingers while the thumb and index finger hold a cup: slightly bent, out of the way.
+# Curled further they would reach into the cup below the grip (it widens towards its mouth).
+SPARE = {f"{f}J{j}": 0.4 for f in ("MF", "RF", "LF") for j in (3, 0)}
+
+
 def _shadow_pose(**joints) -> np.ndarray:
     """Actuator targets for the Shadow hand from named values (unnamed: 0). J0 drives a finger's two distal
     joints together (their sum)."""
@@ -90,24 +107,58 @@ SHADOW = Hand(
         "palm", "ffknuckle", "ffproximal", "ffmiddle", "ffdistal", "mfknuckle", "mfproximal", "mfmiddle",
         "mfdistal", "rfknuckle", "rfproximal", "rfmiddle", "rfdistal", "lfmetacarpal", "lfknuckle", "lfproximal",
         "lfmiddle", "lfdistal", "thbase", "thproximal", "thhub", "thmiddle", "thdistal")),
-    # The cup's axis sits beside the knuckles, 1.2 cm above the wrist axis: lower, the thumb (which arches above its
-    # base) lands on the cup's top instead of behind it.
-    grasp_site=(0.125, 0.054, -0.012),
+    # Two-finger cup grip, as in your clips: the thumb's and the index finger's pads on opposite sides of the cup,
+    # the cup standing in front of the palm (7 cm out) with its axis along the thumb's side; the middle, ring and
+    # little fingers stay slightly bent, out of the way (6 mm off the cup, which widens below the grip). Found with
+    # scripts/g1_shadow_poses.py (cup --side): at a 6.4 cm gap the rest of the hand stays 8 mm off the cup's wall.
+    # The hand comes down onto the cup from above, thumb up, the fingers along the heading and the open pads
+    # straddling the cup's narrow end. The hand reaches 8.5 cm below the grip and 2.2 cm above it, so the cups are
+    # held 2.8 cm from their narrow end: high enough over the table to pick a mouth-down cup, and, once the top cup
+    # is turned over (a roll about the line between the two pads, which turns the hand thumb-down), high enough over
+    # the base cups to put it down.
+    grasp_site=(0.142, 0.073, 0.043),
+    approach=(0.0, 0.0, -1.0),
+    clearance=0.115,  # the open fingers reach 8.5 cm below the grip
+    # The cups are held 2.8 cm from their narrow end (see above). The turned-over hand reaches the pyramid with the
+    # most room from the arm's joint limits (0.25 rad) at (0.48, -0.16) with its fingers at +0.2 rad; it lets go of
+    # the top cup with its fingers across the base cups' line (along it, the opening thumb lands on a base cup), so
+    # the line runs at 0.2 - 90 degrees. The supply spots stay 16 cm clear of that pyramid.
+    task={"grasp_height_frac": 0.77, "top_grasp_height_frac": 0.23, "pyramid_center": (0.48, -0.16),
+          "pyramid_yaw": 0.2 - np.pi / 2, "supply_cups": ((0.30, -0.18), (0.30, -0.35), (0.34, 0.02))},
+    corridor=(-0.20, 0.10, -0.12, 0.03),
     poses={
-        # Power grasp: the four fingers wrap the cup's far side, the thumb presses its back. The thumb starts
-        # pre-shaped behind where the cup ends up (clear of it while the hand slides in), so closing only moves it
-        # 2 cm. Finger targets are 0.08 rad (J3) / 0.12 rad (J0) past touching the cup and the thumb's goes into it:
-        # the Shadow's thumb servos are weak, and a harder finger squeeze shoves the cup 3 cm back past the thumb.
-        "wrap": (_shadow_pose(THJ5=-0.693, THJ4=1.22, THJ2=0.69, THJ1=1.341),
-                 _shadow_pose(FFJ3=1.05, FFJ0=1.35, MFJ3=1.05, MFJ0=1.28, RFJ3=0.83, RFJ0=1.36, LFJ3=0.53, LFJ0=1.37,
-                              THJ5=-0.2, THJ4=1.22, THJ2=0.69, THJ1=1.57)),
-        # Not designed yet: "pinch" (the cap) and "thumbs_up". See docs/HANDOFF_FIVE_FINGER.md.
+        # Open: pads 12 cm apart (3 cm room on each side of a cup); closed: 2.7 cm, a squeeze through a 6 cm cup.
+        "wrap": (_shadow_pose(THJ5=-0.229, THJ4=1.178, THJ3=-0.019, THJ2=-0.37, THJ1=0.971, FFJ4=-0.212, FFJ3=0.356,
+                              FFJ0=0.089, **SPARE),
+                 _shadow_pose(THJ5=0.221, THJ4=1.178, THJ3=-0.019, THJ2=-0.37, THJ1=1.571, FFJ4=-0.212, FFJ3=0.806,
+                              FFJ0=1.389, **SPARE)),
+        # Cap pinch, as in your throw clips: the thumb's and the index finger's tips meet across the cap, palm down, the
+        # other three fingers straight. Found with scripts/g1_shadow_poses.py (pinch): the two tips are the lowest
+        # points of the hand, 4 mm below everything else (the search asked for 5), so they reach the cap's sides
+        # with 3 mm between the knuckles and the cap's top. Open: tips 44 mm apart; closed: 20 mm (a squeeze through
+        # the 28 mm cap), centred within 3 mm of each other.
+        "pinch": (_shadow_pose(THJ5=0.623, THJ4=0.801, THJ3=0.182, THJ2=0.048, THJ1=-0.175, FFJ4=0.003, FFJ3=0.45,
+                               FFJ0=0.919),
+                  _shadow_pose(THJ5=0.823, THJ4=0.801, THJ3=0.182, THJ2=0.048, THJ1=-0.175, FFJ4=0.003, FFJ3=0.25,
+                               FFJ0=1.719)),
+        # Thumbs-up: the four fingers curl into a fist, the thumb stands up from it (THJ4 0.6, THJ5 -0.5).
+        "thumbs_up": (_shadow_pose(THJ4=0.6, THJ5=-0.5),
+                      _shadow_pose(THJ4=0.6, THJ5=-0.5, **{f"{f}J{j}": v for f in ("FF", "MF", "RF", "LF")
+                                                           for j, v in ((3, 1.57), (0, 2.6))})),
     },
-    # Cup B is put down with the palm facing cup A (the fingers and thumb wrap the side away from it), the top cup
-    # with the fingers across the base cups' line so the thumb, under the cup once it is turned over, hangs in the
-    # gap between them. A placed top cup is left by sliding the hand back along its fingers.
-    expert={"place_yaw": -0.785, "top_place_yaw": -0.785, "flip_taper_sign": 0.0, "flip_exit_out": None,
-            "flip_exit_rise": 0.0},
+    # From the thumb's middle joint to its tip in the thumbs-up; rolled 0.5 rad about the fingers from the upright
+    # grip it points 95% straight up (the check asks for 82%).
+    thumb_dir=np.array([0.306, 0.458, 0.834]),
+    thumbs_up_roll=0.502,
+    pinch_point=np.array([0.1646, 0.0595, 0.0388]),
+    pinch_down=np.array([0.263, 0.462, 0.847]),
+    pinch_axis=np.array([0.964, -0.164, -0.210]),
+    # Cups are put down with the fingers pointing forward (the hand on a base cup's right, away from cup A), the
+    # top cup with them across the base cups' line; a placed top cup is left upwards and out along its sloping wall
+    # (rising straight up, the little finger catches the cup where it widens). The cup is turned over rolling the
+    # hand one way round: the other way the shoulder runs into its joint limit (8/8 vs 0/8 placed).
+    expert={"place_yaw": 0.0, "top_yaw_rel": np.pi / 2, "pre_dist": 0.10, "flip_taper_sign": 0.0, "flip_offset": 0.0,
+            "flip_exit_out": 2.5, "flip_dir": 1.0},
     menagerie=("shadow_hand", "right_hand.xml"),
     # The Shadow palm's own frame has the fingers along +z, the palm facing -y and the thumb on the +x side:
     # turned half a turn about (x + z) it points its fingers along the wrist's +x with the palm facing +y and the

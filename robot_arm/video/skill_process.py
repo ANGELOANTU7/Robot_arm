@@ -17,6 +17,7 @@ from robot_arm.video.calibrate import SHEET_MM, Camera, calibrate
 from robot_arm.video.cups import cup_centre, long_axis, two_cup_centres
 from robot_arm.video.process import HAND_EDGES, read_video
 from robot_arm.video.skills import Props, SkillDemo, SkillTrack, reconstruct_skill
+from robot_arm.video.stabilize import stabilize
 from robot_arm.video.tracking import HandTracker, color_mask, detect_blob
 
 SKILLS = ("place_base", "place_top", "toss")
@@ -78,6 +79,19 @@ def top_cup_opening(frame: np.ndarray, pyramid: np.ndarray, camera: Camera) -> n
     return cv2.convexHull(np.column_stack([xs, ys]).astype(np.int32))[:, 0, :].astype(float)
 
 
+def track_hands(frames: list[np.ndarray], fps: float) -> dict:
+    """MediaPipe hand landmarks in every frame (NaN where no hand is found), as `hands` for the trackers."""
+    T = len(frames)
+    hand_px, hand_world = np.full((T, 21, 2), np.nan), np.full((T, 21, 3), np.nan)
+    tracker = HandTracker()
+    for i, frame in enumerate(frames):
+        det = tracker(frame, int(round(i * 1000 / fps)))
+        if det is not None:
+            hand_px[i], hand_world[i] = det.image_px, det.world_m
+    tracker.close()
+    return {"hand_px": hand_px, "hand_world": hand_world}
+
+
 def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillColors, camera: Camera,
                 props: Props = Props(), hands: dict | None = None) -> SkillTrack:
     """Hand landmarks per frame (or `hands`, cached: hand_px, hand_world), the moved cup's blob centre (place) or
@@ -119,19 +133,14 @@ def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillC
     ends = camera.project(np.array([[0.0, 0, 0], [0.01, 0, 0]]))
     px_per_m = float(np.linalg.norm(ends[1] - ends[0]) * 100)
     cap_area = np.pi * (props.cap_radius * px_per_m) ** 2
+    hands = track_hands(frames, fps) if hands is None else hands
     hand_px = np.full((T, 21, 2), np.nan)
     hand_world = np.full((T, 21, 3), np.nan)
-    if hands is not None:
-        hand_px[:], hand_world[:] = hands["hand_px"][:T], hands["hand_world"][:T]
+    hand_px[:], hand_world[:] = hands["hand_px"][:T], hands["hand_world"][:T]
     obj_px = np.full((T, 2), np.nan)
     obj_r = np.full(T, np.nan)
-    tracker = HandTracker() if hands is None else None
     last_cap, missing = None, 0
     for i, frame in enumerate(frames):
-        if tracker is not None:
-            det = tracker(frame, int(round(i * 1000 / fps)))
-            if det is not None:
-                hand_px[i], hand_world[i] = det.image_px, det.world_m
         if skill == "toss":
             near = last_cap if missing < int(0.1 * fps) else None  # search everywhere after losing it
             cap = detect_blob(frame, colors.cap, min_area=0.2 * cap_area, max_area=4 * cap_area, near=near,
@@ -145,8 +154,6 @@ def track_skill(frames: list[np.ndarray], fps: float, skill: str, colors: SkillC
             cup = detect_blob(frame, colors.cups, min_area=300, mask=moving)
             if cup is not None:
                 obj_px[i], obj_r[i] = cup.center, cup.radius
-    if tracker is not None:
-        tracker.close()
     return SkillTrack(np.arange(T) / fps, hand_px, hand_world, obj_px, obj_r, marks, in_cup_px)
 
 
@@ -210,6 +217,7 @@ def track_base_pair(frames: list[np.ndarray], fps: float, colors: SkillColors, c
     static = cv2.dilate((first & last).astype(np.uint8), kernel) > 0
     dil = lambda m: cv2.dilate(m.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0  # noqa: E731
     on_table = lambda c: np.array([c[0], c[1], 0.0])  # noqa: E731
+    hands = track_hands(frames, fps) if hands is None else hands
     tracks = []
     for n, (f0, f1) in enumerate([(0, split), (split, T)]):
         s_mask, e_mask = starts[order_s[n]], end_parts[order_e[n]]
@@ -225,10 +233,7 @@ def track_base_pair(frames: list[np.ndarray], fps: float, colors: SkillColors, c
             cup = detect_blob(frames[i], colors.cups, min_area=300, mask=moving)
             if cup is not None:
                 obj_px[i - f0], obj_r[i - f0] = cup.center, cup.radius
-        hand_px = np.full((f1 - f0, 21, 2), np.nan)
-        hand_world = np.full((f1 - f0, 21, 3), np.nan)
-        if hands is not None:
-            hand_px[:], hand_world[:] = hands["hand_px"][f0:f1], hands["hand_world"][f0:f1]
+        hand_px, hand_world = hands["hand_px"][f0:f1].copy(), hands["hand_world"][f0:f1].copy()
         tracks.append(SkillTrack(np.arange(f0, f1) / fps, hand_px, hand_world, obj_px, obj_r, marks))
     return tracks
 
@@ -236,10 +241,12 @@ def track_base_pair(frames: list[np.ndarray], fps: float, colors: SkillColors, c
 def process_skill_video(path: str | Path, out_dir: str | Path, skill: str | None = None,
                         colors: SkillColors = SkillColors(), props: Props = Props(), marker_mm: float = 50.0,
                         focal_px: float | None = None, hfov_deg: float | None = None, debug: bool = True,
-                        hands: dict | None = None, max_width: int = 1280) -> tuple[SkillDemo, dict]:
+                        hands: dict | None = None, max_width: int = 1280, handheld: bool = False,
+                        pad: float = 0.15) -> tuple[SkillDemo, dict]:
     """`hands`: hand landmarks tracked earlier for this clip at its full resolution (hand_px, hand_world), to
     skip MediaPipe. `focal_px` is for the clip's full resolution too; frames wider than `max_width` are
-    scaled down (a 1080x1920 clip of 900 frames is 6 GB in memory)."""
+    scaled down (a 1080x1920 clip of 900 frames is 6 GB in memory). `handheld`: the phone moved during the
+    clip; the frames are first warped onto one fixed camera (see stabilize.py), `pad` larger on each side."""
     path, out_dir = Path(path), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     skill = skill or skill_from_name(path)
@@ -249,8 +256,18 @@ def process_skill_video(path: str | Path, out_dir: str | Path, skill: str | None
     if hands is not None:
         hands = {**hands, "hand_px": np.asarray(hands["hand_px"]) * scale}
     focal_px = focal_px * scale if focal_px else None
+    stab_info = {}
+    if handheld:
+        if hands is not None:
+            raise ValueError("Hand landmarks tracked earlier are for the unwarped frames: don't pass them with "
+                             "a hand-held clip.")
+        first, _ = calibrate(frames[: int(fps)], marker_mm=marker_mm, focal_px=focal_px, hfov_deg=hfov_deg)
+        frames, K, stab_info = stabilize(frames, first.K, fps, marker_mm, pad)
+        focal_px, hfov_deg = float(K[0, 0]), None
     camera, calib_info = calibrate(frames[: int(fps)], marker_mm=marker_mm, focal_px=focal_px, hfov_deg=hfov_deg)
+    calib_info.update(stab_info)
     np.savez(out_dir / f"{path.stem}_camera.npz", **camera.as_dict())
+    hands = track_hands(frames, fps) if hands is None else hands
     pieces = track_base_pair(frames, fps, colors, camera, props, hands) if skill == "place_base" else []
     if not pieces:  # one cup moved (or one cup thrown, with any re-throws)
         pieces = [track_skill(frames, fps, skill, colors, camera, props, hands)]

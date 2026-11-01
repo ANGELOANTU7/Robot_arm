@@ -17,3 +17,7 @@ runs/
 *.task
 MUJOCO_LOG.TXT
 logs/
+
+# Videos of every simulated try (robot_arm/humanoid/trylog.py), and local experiment output
+try_videos/
+scratch/

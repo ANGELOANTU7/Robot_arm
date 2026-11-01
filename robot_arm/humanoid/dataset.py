@@ -53,9 +53,12 @@ def _place_trial(job):
     from robot_arm.humanoid.envs import G1PyramidEnv
     from robot_arm.humanoid.retarget import G1Retargeter, rollout
 
+    from robot_arm.humanoid import trylog
+
     demo, stage, seed = job
-    env = G1PyramidEnv(task="place", stage=stage)
-    *_, info, _ = rollout(env, G1Retargeter({stage: demo}, None), np.random.default_rng(seed), seed=seed)
+    env = G1PyramidEnv(task="place", stage=stage, **trylog.render_kwargs())
+    *_, info, _ = rollout(env, G1Retargeter({stage: demo}, None), np.random.default_rng(seed), seed=seed,
+                          name=f"reproduce_{demo.info.get('name', 'demo')}_place{stage}")
     return bool(info["is_success"])
 
 
@@ -98,24 +101,29 @@ def _worker(job):
     from robot_arm.humanoid.envs import G1PyramidEnv
     from robot_arm.humanoid.retarget import G1Retargeter, expert_params, rollout
 
-    task, place, style, seed, noise = job
+    from robot_arm.humanoid import trylog
+
+    task, place, style, seed, noise, stop_stage = job
     if task not in _ENVS:
-        _ENVS[task] = G1PyramidEnv(task=task)
+        _ENVS[task] = G1PyramidEnv(task=task, **trylog.render_kwargs())
     env = _ENVS[task]
     rng = np.random.default_rng(seed)
     policy = G1Retargeter(place, expert_params(style))
     options = {"stage": int(rng.integers(3))} if task == "place" else None
-    obs, actions, stages, done, info, _ = rollout(env, policy, rng, noise=noise, seed=seed, options=options)
+    obs, actions, stages, done, info, _ = rollout(env, policy, rng, noise=noise, seed=seed, options=options,
+                                                  stop_stage=stop_stage,
+                                                  name=f"demo_{task}")
     return obs.astype(np.float32), actions.astype(np.float32), stages.astype(np.int8), sorted(done)
 
 
 def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes: int = 600, noise: float = 0.3,
                 clean_fraction: float = 0.2, task_mix=(("full", 0.5), ("place", 0.15), ("toss", 0.35)),
-                seed: int = 0, workers: int = 4) -> dict:
+                seed: int = 0, workers: int = 4, place_only: bool = False) -> dict:
     """Roll out the retargeted experts; keep each stage of an episode that the stage completed.
 
     Every episode draws one human demo per place stage (place_base for both base cups, place_top for the top
-    cup) and one throw style."""
+    cup) and one throw style. With `place_only`, "full" episodes end once the pyramid stands."""
+    from robot_arm.humanoid.envs import TOSS
     from robot_arm.humanoid.retarget import place_demos_by_cup
 
     rng = np.random.default_rng(seed)
@@ -130,7 +138,7 @@ def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes:
                           int(rng.integers(len(top))), int(rng.integers(len(styles))))
         place = {0: base_a[ia], 1: base_b[ib], 2: top[it]}
         ep_noise = 0.0 if rng.random() < clean_fraction else noise
-        jobs.append((task, place, styles[js], int(rng.integers(1 << 30)), ep_noise))
+        jobs.append((task, place, styles[js], int(rng.integers(1 << 30)), ep_noise, TOSS if place_only else None))
         meta.append({"task": task, "demos": [ia, ib, it], "style": js, "noise": ep_noise})
 
     with get_context("spawn").Pool(workers) as pool:
@@ -145,6 +153,93 @@ def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes:
             for buf, x in zip(keep[key], (o[sel], a[sel], np.full(sel.sum(), e), st[sel])):
                 buf.append(x)
     out = {"meta": meta}
+    for key, (o, a, ep, st) in keep.items():
+        if o:
+            out[key] = {"obs": np.concatenate(o), "actions": np.concatenate(a), "episode": np.concatenate(ep),
+                        "stage": np.concatenate(st)}
+    return out
+
+
+_LEARNERS = {}
+
+
+def _dagger_worker(job):
+    """DAgger: an episode driven by the learner (at each step the expert's action instead with probability `beta`),
+    every state labelled by the retargeted expert. The expert watches the whole episode, so its phases (reach,
+    grasp, carry, lower, let go) follow the state the learner brings about. With a `stop_stage` the episode ends when
+    it gets there."""
+    from robot_arm.humanoid import trylog
+    from robot_arm.humanoid.envs import G1PyramidEnv
+    from robot_arm.humanoid.retarget import G1Retargeter, expert_params
+    from robot_arm.policy import load_checkpoint
+
+    task, place, style, seed, checkpoints, beta, stop_stage = job
+    if task not in _ENVS:
+        _ENVS[task] = G1PyramidEnv(task=task, **trylog.render_kwargs())
+    env = _ENVS[task]
+    if checkpoints not in _LEARNERS:
+        from robot_arm.humanoid.evaluate import StagePolicy
+
+        place_ckpt, toss_ckpt = checkpoints
+        scripted = G1Retargeter(place, expert_params(style))  # stands in for a skill without a learned policy
+        _LEARNERS[checkpoints] = StagePolicy(load_checkpoint(place_ckpt) if place_ckpt else scripted,
+                                             load_checkpoint(toss_ckpt) if toss_ckpt else scripted)
+    learner = _LEARNERS[checkpoints]
+    rng = np.random.default_rng(seed)
+    expert = G1Retargeter(place, expert_params(style))
+    options = {"stage": int(rng.integers(3))} if task == "place" else None
+    obs, _ = env.reset(seed=seed, options=options)
+    expert.reset()
+    learner.reset()
+    tries = trylog.TryRecorder(env, f"dagger_{task}", f"DAgger: learner acting, expert labelling (beta {beta})")
+    observations, labels, stages = [], [], []
+    info = {}
+    for t in range(env.max_steps):
+        label = expert(obs)
+        action = label if rng.random() < beta else learner(obs)
+        observations.append(obs)
+        labels.append(label)
+        stages.append(env.stage)
+        obs, _, terminated, truncated, info = env.step(action)
+        tries.step(t)
+        if terminated or truncated or (stop_stage is not None and env.stage >= stop_stage):
+            break
+    tries.finish(info, seed)
+    return (np.array(observations, np.float32), np.array(labels, np.float32), np.array(stages, np.int8),
+            int(env.stage), bool(info.get("is_success", False)))
+
+
+def generate_dagger(demos: dict[str, list[SkillDemo]], styles: list[dict], place_ckpt: str | None,
+                    toss_ckpt: str | None, episodes: int, beta: float = 0.2, task_mix=(("full", 0.5), ("place", 0.5)),
+                    seed: int = 0, workers: int = 4, place_only: bool = False) -> dict:
+    """DAgger rollouts with the learned policies (None: the retargeted expert for that skill); every step is kept,
+    labelled by the expert, split into place (stages 0-2) and toss (3-4) data like generate_g1's. `place_only`: full
+    episodes end once the pyramid stands."""
+    from robot_arm.humanoid.envs import TOSS
+    from robot_arm.humanoid.retarget import place_demos_by_cup
+
+    rng = np.random.default_rng(seed)
+    base_a, base_b, top = place_demos_by_cup(demos)
+    tasks, probs = zip(*task_mix)
+    jobs = []
+    for _ in range(episodes):
+        task = str(rng.choice(tasks, p=np.array(probs) / sum(probs)))
+        place = {0: base_a[rng.integers(len(base_a))], 1: base_b[rng.integers(len(base_b))],
+                 2: top[rng.integers(len(top))]}
+        style = styles[rng.integers(len(styles))] if styles else None
+        jobs.append((task, place, style, int(rng.integers(1 << 30)), (place_ckpt, toss_ckpt), beta,
+                     TOSS if place_only else None))
+    with get_context("spawn").Pool(workers) as pool:
+        results = pool.map(_dagger_worker, jobs, chunksize=2)
+    keep = {"place": ([], [], [], []), "toss": ([], [], [], [])}
+    reached = []
+    for e, (o, a, st, last_stage, success) in enumerate(results):
+        reached.append(last_stage + int(success))
+        for key, sel in (("place", st < 3), ("toss", st >= 3)):
+            if sel.any():
+                for buf, x in zip(keep[key], (o[sel], a[sel], np.full(sel.sum(), e), st[sel])):
+                    buf.append(x)
+    out = {"reached": reached}
     for key, (o, a, ep, st) in keep.items():
         if o:
             out[key] = {"obs": np.concatenate(o), "actions": np.concatenate(a), "episode": np.concatenate(ep),

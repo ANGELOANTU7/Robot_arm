@@ -112,5 +112,12 @@ class TorchPolicy:
         return self.model.mean_action(x).clamp(-1, 1).cpu().numpy()
 
 
-def load_checkpoint(path: str | Path, device: str = "cpu") -> TorchPolicy:
+def load_checkpoint(path: str | Path, device: str = "cpu"):
+    """A policy from a checkpoint: the Gaussian MLP (BC, PPO) or, with a `kind` key, a chunked policy
+    (robot_arm.diffusion)."""
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    if ckpt.get("kind", "gaussian") != "gaussian":
+        from robot_arm.diffusion import load_chunk_policy
+
+        return load_chunk_policy(ckpt, device)
     return TorchPolicy(ActorCritic.load(path, device), device)

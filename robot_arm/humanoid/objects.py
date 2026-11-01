@@ -6,6 +6,7 @@ import mujoco
 import numpy as np
 
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
+from robot_arm.humanoid.hands import get_hand
 
 UP = np.array([1.0, 0.0, 0.0, 0.0])  # cup mouth up
 DOWN = np.array([0.0, 1.0, 0.0, 0.0])  # cup mouth down (180 degrees about x)
@@ -126,12 +127,16 @@ def reach_heading(xy, cfg: G1TaskConfig = G1_CFG) -> float:
     return float(np.clip(np.arctan2(d[1], d[0]), *cfg.grasp_heading))
 
 
-def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1TaskConfig = G1_CFG, tries: int = 500):
+def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1TaskConfig = G1_CFG, tries: int = 500,
+                  keep_out: dict[int, np.ndarray] | None = None):
     """Random start spots for the three cups (picked in order A, B, top) and the cap, all within reach.
 
-    Each cup is approached along its reach heading, sliding in from 16-24 cm behind it, and the fingertips end
-    ~11 cm past its centre: whatever is on the table when it is picked (the later cups, the cap, the base cups
-    already in the pyramid) must be outside that corridor. Returns ([A, B, top] as xy arrays, cap xy)."""
+    Each cup is approached along its reach heading; the hand and forearm sweep the hand's corridor around it (the
+    Dex3 slides in from 16-24 cm behind it and its fingertips end ~11 cm past its centre): whatever is on the table
+    when it is picked (the later cups, the cap, the base cups already in the pyramid) must be outside it.
+    keep_out: {k: xy points relative to base cup k's target} the forearm passes over at the cups' height while cup k
+    is put down (G1PyramidEnv.forearm_keep_out); the cups still waiting then must be clear of them. Returns
+    ([A, B, top] as xy arrays, cap xy)."""
     lo, hi = cfg.reach_radius
     b_lo, b_hi = cfg.reach_bearing
     centre = np.asarray(cfg.reach_center, float)
@@ -148,11 +153,13 @@ def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1Task
                 return p
         return p
 
+    behind, ahead, right, left = get_hand(cfg.hand).corridor
+
     def in_corridor(cup, other, r_other):
         h = reach_heading(cup, cfg)
         x = np.array([np.cos(h), np.sin(h)])
         s, lat = (other - cup) @ x, (other - cup) @ np.array([-x[1], x[0]])
-        return -0.24 - r_other < s < 0.12 + r_other and abs(lat) < 0.06 + r_other
+        return behind - r_other < s < ahead + r_other and right - r_other < lat < left + r_other
 
     for _ in range(tries):
         cups = [spot() for _ in range(3)]
@@ -172,6 +179,9 @@ def sample_layout(rng: np.random.Generator, layout: "PyramidLayout", cfg: G1Task
         if any(in_corridor(c, cap, cfg.cap_radius) for c in cups):
             continue
         if any(in_corridor(cups[k], bases[j], r_cup + 0.01) for k in range(3) for j in range(min(k, 2))):
+            continue
+        if keep_out and any(np.linalg.norm(bases[k] + pts - cups[j], axis=1).min() < r_cup + 0.03
+                            for k, pts in keep_out.items() if len(pts) for j in range(k + 1, 3)):
             continue
         return cups, cap
     # Nothing found (about a third of the pyramid placements): the nominal spots, which fit, moved a little.

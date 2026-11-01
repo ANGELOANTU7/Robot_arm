@@ -65,6 +65,7 @@ def main():
     p.add_argument("--styles", type=Path, help="reuse throw styles saved by an earlier run (g1_styles.json)")
     p.add_argument("--task-mix", default="full=0.5,place=0.15,toss=0.35",
                    help="share of episodes per env task, e.g. toss=1 for more toss data only")
+    p.add_argument("--place-only", action="store_true", help="end full episodes once the pyramid stands (no throw)")
     p.add_argument("--videos", type=int, default=0, help="render this many demos per skill on the G1 (needs a GL"
                    " context: MUJOCO_GL=osmesa or egl)")
     args = p.parse_args()
@@ -88,12 +89,13 @@ def main():
             styles = throw_styles(demos["toss"], pool=pool, calibrate=not args.no_calibrate)
     for demo, style in zip(demos["toss"], styles):
         hist = style.get("aim_history", [])
-        print(f"  {demo.info['name']}: style {style['human']} -> aim {np.round(style['aim_offset'][:2], 3)}, "
+        print(f"  {demo.info['name']}: style {style['human']} -> aim "
+              f"{np.round(style.get('aim_offset', (0.0, 0.0))[:2], 3)}, "
               f"calibration success {[h[1] for h in hist]}")
 
     mix = tuple((k, float(v)) for k, v in (item.split("=") for item in args.task_mix.split(",")))
     data = generate_g1(demos, styles, args.episodes, args.noise, args.clean_fraction, task_mix=mix, seed=args.seed,
-                       workers=args.workers)
+                       workers=args.workers, place_only=args.place_only)
     summary = save_dataset(data, args.out, styles, {"human": str(args.human), "episodes": args.episodes,
                                                     "noise": args.noise})
     print(json.dumps(summary, indent=2))

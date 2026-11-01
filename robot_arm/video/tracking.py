@@ -73,6 +73,65 @@ class HandTracker:
         self._landmarker.close()
 
 
+POSE_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/"
+                  "float16/latest/pose_landmarker_heavy.task")
+POSE_MODEL_PATH = Path.home() / ".cache" / "robot_arm" / "pose_landmarker_heavy.task"
+
+# MediaPipe pose landmark indices, by the model's own labels. Looking down from above, with the person sat at the
+# table's edge, the model has no face or chest to tell the sides apart and comes out swapped: the user's right arm
+# is the one labelled "left" (11, 13, 15). Pick the working arm by its wrist's distance to the working hand's
+# wrist, never by the label.
+SHOULDERS, ELBOWS, WRISTS = (11, 12), (13, 14), (15, 16)  # (labelled left, labelled right)
+
+
+def ensure_pose_model() -> Path:
+    if not POSE_MODEL_PATH.exists():
+        POSE_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading MediaPipe pose model to {POSE_MODEL_PATH} ...")
+        urllib.request.urlretrieve(POSE_MODEL_URL, POSE_MODEL_PATH)
+    return POSE_MODEL_PATH
+
+
+@dataclass
+class PoseDetection:
+    image_px: np.ndarray  # (33, 2) pixel coordinates
+    world_m: np.ndarray  # (33, 3) metric landmarks around the hips, camera-aligned axes
+    visibility: np.ndarray  # (33,) the model's confidence that each landmark is in view and not occluded
+
+
+class PoseTracker:
+    """MediaPipe PoseLandmarker in video mode: the body's 33 landmarks (shoulders, elbows, wrists, hips, ...).
+    Looking down at a table from the front, the head is mostly out of frame and the torso is hidden, so what
+    matters is how often the shoulders and the elbow are found: check `visibility` before relying on them."""
+
+    def __init__(self, min_confidence: float = 0.5):
+        from mediapipe.tasks.python import BaseOptions, vision
+
+        options = vision.PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(ensure_pose_model())),
+            running_mode=vision.RunningMode.VIDEO, num_poses=1,
+            min_pose_detection_confidence=min_confidence, min_pose_presence_confidence=min_confidence,
+            min_tracking_confidence=min_confidence)
+        self._landmarker = vision.PoseLandmarker.create_from_options(options)
+
+    def __call__(self, frame_bgr: np.ndarray, timestamp_ms: int) -> PoseDetection | None:
+        import mediapipe as mp
+
+        h, w = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        result = self._landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
+                                                   timestamp_ms)
+        if not result.pose_landmarks:
+            return None
+        lms, world = result.pose_landmarks[0], result.pose_world_landmarks[0]
+        return PoseDetection(np.array([[lm.x * w, lm.y * h] for lm in lms]),
+                             np.array([[lm.x, lm.y, lm.z] for lm in world]),
+                             np.array([lm.visibility for lm in lms]))
+
+    def close(self):
+        self._landmarker.close()
+
+
 @dataclass
 class Blob:
     center: np.ndarray  # (2,) pixel centroid

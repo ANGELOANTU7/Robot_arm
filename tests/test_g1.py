@@ -91,10 +91,9 @@ def test_scripted_place_expert(stage):
 
 
 def test_five_finger_hand_places_a_base_cup():
-    import dataclasses
-
+    from robot_arm.humanoid.config import task_config
     from robot_arm.humanoid.hands import SHADOW
-    cfg = dataclasses.replace(G1_CFG, hand="shadow")
+    cfg = task_config("shadow")  # with the hand's own grip height and pyramid spot
     env = G1PyramidEnv(task="place", stage=1, cfg=cfg)
     assert env.ids.hand is SHADOW and len(env.ids.hand_ctrl) == 18 and env.observation_space.shape == (OBS_DIM,)
     expert = PlaceExpert(cfg)

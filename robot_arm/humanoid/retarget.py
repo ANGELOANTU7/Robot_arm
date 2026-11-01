@@ -32,7 +32,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from robot_arm.humanoid import trylog
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
+from robot_arm.humanoid.hands import get_hand
 from robot_arm.humanoid.envs import OBS_CAP, OBS_SITE, OBS_STAGE, OBS_TARGET, TOSS, G1PyramidEnv, obs_cup
 from robot_arm.humanoid.objects import (ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point,
                                         reach_heading)
@@ -103,12 +105,14 @@ def place_obstacles(obs: np.ndarray, stage: int, cfg: G1TaskConfig = G1_CFG) -> 
 def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r: np.ndarray,
                obstacles: list[Obstacle], held_cup: Obstacle, hang: float, cfg: G1TaskConfig = G1_CFG,
                yaw: float = 0.0, place_yaw: float | None = None, scale: float = ARM_SCALE, pre_dist: float = 0.16,
-               max_speed: float = 0.25, clearance: float = 0.07, max_turn: float = 0.6) -> PlacePlan:
+               max_speed: float = 0.25, clearance: float = 0.07, max_turn: float = 0.6,
+               approach: np.ndarray | None = None) -> PlacePlan:
     """Grasp-site path for the robot from a human place demo.
 
     grasp_r / place_r: robot grasp-site position at the grasp and when the cup stands on its target. hang: how
     far the held cup reaches below the grasp site. held_cup: the cup to pick (an obstacle until the grasp).
-    yaw / place_yaw: the robot hand's heading at the grasp and when putting the cup down."""
+    yaw / place_yaw: the robot hand's heading at the grasp and when putting the cup down. approach: the direction
+    of the hand's last `pre_dist` onto the cup (default: along its heading, sliding in along the fingers)."""
     t = demo.t
     place_yaw = yaw if place_yaw is None else place_yaw
     g_h = demo.palm + PALM_TO_AXIS * demo.palm_rot[:, :, 2]
@@ -126,8 +130,9 @@ def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r:
     w = 10 * w ** 3 - 15 * w ** 4 + 6 * w ** 5
     path = (1 - w)[:, None] * P_g + w[:, None] * P_p
 
-    # Slide in along the fingers for the last `pre_dist`: bend the earlier path so it arrives behind the cup.
-    pre = grasp_r - pre_dist * rob_x
+    # Slide in along the fingers (or the hand's own approach) for the last `pre_dist`: bend the earlier path so it
+    # arrives there.
+    pre = grasp_r - pre_dist * (rob_x if approach is None else np.asarray(approach, float))
     dist = np.linalg.norm(path[:i_g] - grasp_r, axis=1)
     far = np.nonzero(dist >= pre_dist)[0]
     i_pre = int(far[-1]) if len(far) else 0
@@ -149,8 +154,18 @@ def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r:
     # offset between the robot's and the mapped start out before the approach.
     T = cfg.table_height
     start = np.array([site0[0], site0[1], max(site0[2], T + 0.22)])
-    i_fade = max(2, i_b)
-    path[:i_fade] += (start - path[0]) * (1 - _mj(i_fade))[:, None]
+    if i_pre <= 1:
+        # The clip starts at the cup (cut out of a longer one) and shows no reach. A straight line from the hand to
+        # the approach point would sweep the fingers over the cup's rim: go above that point first, clear of the
+        # cup, then down.
+        over = np.array([pre[0], pre[1], max(pre[2], held_cup.top + clearance, start[2])])
+        path[:i_pre + 1] = pre
+        path, t = np.vstack([start, over, path]), np.concatenate([[t[0], t[0]], t])
+        human_heading = np.concatenate([human_heading[:1], human_heading[:1], human_heading])
+        i_b, i_pre, i_g, i_r = i_b + 2, i_pre + 2, i_g + 2, i_r + 2
+    else:
+        i_fade = max(2, i_b)
+        path[:i_fade] += (start - path[0]) * (1 - _mj(i_fade))[:, None]
 
     # Clear the other cups (and the cup to pick, before the approach); while carrying, the held cup too.
     z_req = np.full(len(path), -np.inf)
@@ -168,6 +183,9 @@ def plan_place(demo: SkillDemo, site0: np.ndarray, grasp_r: np.ndarray, place_r:
         padded = np.pad(z_req, k, constant_values=-np.inf)
         z_req = np.array([padded[i:i + 2 * k + 1].max() for i in range(len(path))])  # widen the zones
         z_req[i_pre:i_g + 1] = -np.inf  # but never lift the slide onto the cup
+        # nor the release point and the lift-off after it (a cup set down next to another would otherwise be let go
+        # of high above it, and the retreat, relative to that point, would head down onto the table)
+        z_req[i_r:] = -np.inf
         path[:, 2] = np.maximum(path[:, 2], z_req)
     path[:i_pre, 2] = np.maximum(path[:i_pre, 2], pre[2])  # never dive below the approach height early on
     path[:, 2] = np.maximum(path[:, 2], T + 0.03)
@@ -206,8 +224,12 @@ def place_plan_for_obs(demo: SkillDemo, obs: np.ndarray, cfg: G1TaskConfig = G1_
         grasp_r = cup_grasp_point(pos, axis, 1 - frac, cfg)
     top = pos[2] if axis[2] < 0 else pos[2] + cfg.cup.height
     hang = frac * cfg.cup.height
+    hand = get_hand(cfg.hand)
     kwargs.setdefault("yaw", reach_heading(pos, cfg))
-    kwargs.setdefault("place_yaw", 0.0)
+    kwargs.setdefault("place_yaw", hand.expert.get("place_yaw", 0.0))
+    kwargs.setdefault("pre_dist", hand.expert.get("pre_dist", 0.16))
+    kwargs.setdefault("clearance", hand.clearance)
+    kwargs.setdefault("approach", hand_frame(kwargs["yaw"]) @ np.asarray(hand.approach))
     return plan_place(demo, obs[OBS_SITE], grasp_r, place_r, place_obstacles(obs, stage, cfg),
                       Obstacle(pos[:2].copy(), float(top)), hang, cfg, **kwargs)
 
@@ -243,9 +265,15 @@ class PlaceTracker:
             return self.expert.phase in ("flip", "lower", "open", "back")
         return self.phase in self.FINE_PHASES
 
-    def _advance(self, site, goal, end):
-        if np.linalg.norm(goal - site) < self.lag_tol:
-            self.idx = min(self.idx + 1, end)
+    def _advance(self, site, goal, end, ahead: int = 20):
+        """Move the plan's clock on while the hand keeps up: to the closest of the next `ahead` waypoints the hand
+        is at, at least one. A hand that got ahead of the plan (pushed by noise, or a learner being labelled in
+        DAgger) is then not sent back."""
+        shift = goal - self.plan.waypoints[self.idx]
+        dist = np.linalg.norm(self.plan.waypoints[self.idx:min(self.idx + ahead, end) + 1] + shift - site, axis=1)
+        j = int(np.argmin(dist))
+        if dist[j] < self.lag_tol:
+            self.idx = min(self.idx + max(j, 1), end)
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         cfg, plan = self.cfg, self.plan
@@ -261,7 +289,8 @@ class PlaceTracker:
         grasp = cup_grasp_point(cup_pos, cup_axis, 1 - frac if self.flip else frac, cfg)
         target = obs[OBS_TARGET]
         if self.flip:
-            R_grasp = hand_frame(plan.yaw) @ roll_x(-taper_angle(cfg))
+            R_grasp = hand_frame(plan.yaw) @ roll_x(get_hand(cfg.hand).expert.get("flip_taper_sign", -1.0)
+                                                    * taper_angle(cfg))
         else:
             R_grasp = grasp_frame(plan.yaw, ORIENTATIONS[stage] is UP, cfg)
         R = R_grasp
@@ -392,13 +421,15 @@ def _toss_episode(args):
     """The first throw of a toss episode with the given expert parameters: (in the cup, miss vector at the mouth
     plane or None, outcome)."""
     params, seed = args
-    env = G1PyramidEnv(task="toss")
+    env = G1PyramidEnv(task="toss", **trylog.render_kwargs())
     expert = TossExpert(**params)
     obs, _ = env.reset(seed=seed)
+    tries = trylog.TryRecorder(env, "aimcal_toss", f"aim calibration {np.round(params.get('aim_offset', (0, 0, 0)), 3)}")
     mouth = obs[OBS_TARGET].copy()
     prev, miss = obs[OBS_CAP].copy(), None
-    for _ in range(env.max_steps):
+    for t in range(env.max_steps):
         obs, _, terminated, truncated, info = env.step(expert(obs))
+        tries.step(t)
         cap = obs[OBS_CAP]
         if miss is None and env.release_distance is not None and prev[2] >= mouth[2] > cap[2]:
             f = (prev[2] - mouth[2]) / (prev[2] - cap[2])
@@ -406,6 +437,7 @@ def _toss_episode(args):
         prev = cap.copy()
         if terminated or truncated or env.stage > TOSS or env.misses:  # the first throw decides
             break
+    tries.finish(info if env.stage <= TOSS else {**info, "is_success": env.misses == 0}, seed)
     success = env.stage > TOSS and env.misses == 0
     outcome = "ok" if success else info["fail_reason"] or ("missed" if env.misses else "timeout")
     return bool(success), miss, outcome
@@ -486,11 +518,15 @@ class G1Retargeter:
 
 
 def rollout(env: G1PyramidEnv, policy: G1Retargeter, rng: np.random.Generator, noise: float = 0.0,
-            seed: int | None = None, options: dict | None = None, render: bool = False):
+            seed: int | None = None, options: dict | None = None, render: bool = False, name: str | None = None,
+            stop_stage: int | None = None):
     """Run the retargeted experts. DART: noise on the executed motion (not the labels, not the grip, and not
-    during contact phases). Returns observations, labels, the stage of every step, per-stage success, frames."""
+    during contact phases). Returns observations, labels, the stage of every step, per-stage success, frames.
+    With `name` and TRY_VIDEOS set, the try is saved as a video (see trylog.py). With `stop_stage`, the episode
+    ends (as a success) once it gets there, e.g. TOSS when only the placing is wanted."""
     obs, _ = env.reset(seed=seed, options=options)
     policy.reset()
+    tries = trylog.TryRecorder(env, name, f"retargeted demo, noise {noise}") if name and trylog.try_dir() else None
     observations, labels, stages, frames = [], [], [], []
     done_stages = set()
     info = {"stage": env.stage, "is_success": False}
@@ -511,8 +547,15 @@ def rollout(env: G1PyramidEnv, policy: G1Retargeter, rng: np.random.Generator, n
             done_stages.add(stage)
         if render:
             frames.append(env.render())
+        if tries is not None:
+            tries.step(len(labels) - 1)
+        if stop_stage is not None and env.stage >= stop_stage:
+            info = {**info, "is_success": True}
+            break
         if terminated or truncated:
             break
+    if tries is not None:
+        tries.finish(info, seed)
     return (np.array(observations), np.array(labels), np.array(stages), done_stages, info, frames)
 
 

@@ -93,6 +93,23 @@ python scripts/g1_process_videos.py data/videos_pyramid/*/*.MOV --focal-px 1740 
 python scripts/g1_retarget_demos.py --human data/processed/human_pyramid                      # then train as above
 ```
 
+Clips filmed with the phone in your hand work too, as long as the marker sheet stays in view: `--handheld` warps
+every frame onto one fixed camera using the sheet (`robot_arm/video/stabilize.py`). For the iPhone 16's 0.5x lens
+filming 1920x1080, the focal length calibrates to about 880 px:
+
+```bash
+python scripts/g1_process_videos.py extra_dataset/cup_c/*.MOV extra_dataset/throw/*.MOV --handheld --focal-px 880 \
+    --max-width 960 --folders "cup_c=place_top,throw=toss" --out data/processed/human_new
+```
+
+**Videos of every try.** With `TRY_VIDEOS=<folder>` set, every episode run by the evaluation, the dataset generation
+and DAgger is saved there as `<name>_<seed>_<outcome>.mp4` (`robot_arm/humanoid/trylog.py`). Each recording worker
+pins about 0.75 GB of GPU memory, so on a 16 GB machine keep it to 6 workers in all.
+
+**DAgger.** `scripts/g1_dagger.py` runs the learned policy, has the retargeted expert label every state it visits,
+and retrains on all the data so far. That is the usual remedy when a BC policy drifts off the demos and never
+learned how to come back.
+
 ### How it works
 
 **Video → human skill demonstration** (`robot_arm/video/skills.py`, `skill_process.py`, `cups.py`)
@@ -185,8 +202,9 @@ cup and the pyramid standing. Everything ran in this container (4 CPU cores, no 
   from the right shoulder, from 63° to its right to 46° to its left, on the table and at most 8 cm left of
   the robot's centre line, clear of the pyramid's spot and of the path the hand takes to each cup. Cups further
   left were pushed off the table by the approaching hand. The cap stays at least 20 cm from the pyramid and at
-  most 42 cm in front of the robot (further forward the palm-down pinch is out of reach). About a third of the
-  layouts can't fit all four objects under these rules; those use the nominal spots moved by up to 3 cm.
+  most 42 cm in front of the robot (further forward the palm-down pinch is out of reach). Most layouts can't fit
+  all four objects under these rules (measured: 85% for the Dex3, 72% for the Shadow hand's corridor and pyramid
+  spot); those use the nominal spots moved by up to 3 cm, so the layouts vary less than "anywhere" suggests.
 - **Turning the top cup over.** Letting go of a cup with the hand upside down is awkward for the Dex3: the
   opening fingers push the cup. The scripted expert puts it down about 1 cm towards its palm, snaps the hand
   open and leaves upwards along the cup's wall; with the base cups touching it succeeds in 83–88% of layouts.
@@ -209,10 +227,12 @@ cup and the pyramid standing. Everything ran in this container (4 CPU cores, no 
   - a throw that misses can roll off the table, which ends the episode;
   - a cap that lands on the top cup's rim or next to the pyramid is then picked up close to the cups, and the
     fingers knock them.
-- **A five-fingered hand (in progress).** `G1TaskConfig(hand="shadow")` replaces the Dex3 with a Shadow
-  Dexterous Hand on the G1's wrist. With it, the scripted experts put both base cups down touching (11/12 and
-  12/12). Turning the top cup over doesn't work yet (0/12), and the cap pinch and thumbs-up aren't designed yet.
-  Status and next steps: [docs/HANDOFF_FIVE_FINGER.md](docs/HANDOFF_FIVE_FINGER.md). The Dex3 stays the default.
+- **A five-fingered hand (in progress).** `G1_HAND=shadow` replaces the Dex3 with a Shadow Dexterous Hand on the
+  G1's wrist, everywhere (envs, experts, evaluation, data, training). It holds the cups and the cap with **the
+  thumb and the index finger only**, as in your clips. With it, the scripted experts put both base cups down
+  (8/8 and 8/8). The cap pinch and the thumbs-up are designed, and turning the top cup over is being finished.
+  Status, results and next steps: [docs/HANDOFF_FIVE_FINGER.md](docs/HANDOFF_FIVE_FINGER.md). The Dex3 stays
+  the default.
 - **What your clips gave.** 32 clips: 13 of the base cups (most showing both A and B), 10 of the top cup, 9 of
   throws. MediaPipe found the hand in only part of the frames of some clips (the hand is seen from above, often
   at the image's edge), and every demo whose reconstruction looked wrong was left out, with the reason printed by

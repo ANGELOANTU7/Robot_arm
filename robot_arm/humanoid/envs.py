@@ -20,7 +20,7 @@ from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch
 from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, START_ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout,
                                         base_pair_ok, base_spacing, cap_in_cup, cup_axis, cup_grasp_point,
                                         cup_in_place, pyramid_standing, sample_layout, top_cup_resting)
-from robot_arm.humanoid.scene import G1Ids, build_model
+from robot_arm.humanoid.scene import RIGHT_ARM_COLLIDERS, G1Ids, build_model
 
 N_STAGES = 5  # place cup0, place cup1, place cup2, toss, thumbs-up
 TOSS, THUMBS_UP = 3, 4
@@ -59,6 +59,7 @@ class G1PyramidEnv(gym.Env):
         self.ids = G1Ids(self.model)
         self.controller = G1HandController(self.model, self.ids)
         self.pinch_posture = self._pinch_posture(cfg.cap_spot)
+        self.forearm_keep_out = self._forearm_keep_out()
         self.render_mode, self.camera = render_mode, camera
         self._renderer = mujoco.Renderer(self.model, height, width) if render_mode else None
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)
@@ -79,6 +80,35 @@ class G1PyramidEnv(gym.Env):
         above_cap = np.array([*cap_xy[:2], self.cfg.table_height + 0.12])
         return self.controller.solve(self.ids.ready_qpos, site_for_pinch(above_cap, R, self.ids.hand), R,
                                      q_start=self.controller.home, iters=400)
+
+    def _forearm_keep_out(self) -> dict[int, np.ndarray]:
+        """For base cups A and B: xy points (relative to the cup's target) along the forearm, from the elbow to the
+        grasp site, that are lower than a waiting cup's top (plus the links' thickness) while the cup is put down.
+        The arm reaches the pyramid low and from behind: with the Shadow hand the wrist passes 10-30 cm behind the
+        target at the cups' height, and lowering cup A onto it would rest the wrist on a cup waiting there."""
+        from robot_arm.humanoid.scripted import grasp_frame
+
+        cfg, m, ids = self.cfg, self.model, self.ids
+        d = mujoco.MjData(m)
+        T, h = cfg.table_height, cfg.cup.height
+        R = grasp_frame(ids.hand.expert.get("place_yaw", 0.0), False, cfg)
+        links = [m.body(n).id for n in RIGHT_ARM_COLLIDERS]
+        layout = PyramidLayout.make(np.asarray(cfg.pyramid_center), cfg.pyramid_yaw, cfg)
+        out = {}
+        for k, target in enumerate((layout.base_a, layout.base_b)):
+            pts = []
+            for lift in (0.0, 0.04):  # standing on its target, and on the way down
+                site = cup_grasp_point(np.asarray(target) + [0, 0, lift], np.array([0, 0, -1.0]),
+                                       cfg.grasp_height_frac, cfg)
+                d.qpos[:] = ids.ready_qpos
+                d.qpos[ids.arm_qpos] = self.controller.solve(ids.ready_qpos, site, R, q_start=self.controller.home,
+                                                             iters=300)
+                mujoco.mj_kinematics(m, d)
+                chain = [d.xpos[b].copy() for b in links] + [d.site_xpos[ids.grasp_site].copy()]
+                for a, b in zip(chain[:-1], chain[1:]):
+                    pts += [p[:2] - target[:2] for p in np.linspace(a, b, 6) if p[2] < T + h + 0.04]
+            out[k] = np.array(pts).reshape(-1, 2)
+        return out
 
     # ------------------------------------------------------------------ state
     @property
@@ -164,7 +194,7 @@ class G1PyramidEnv(gym.Env):
             supply = [np.asarray(p) + rng.uniform(-j, j, 2) for p in options.get("supply", cfg.supply_cups)]
             cap_xy = np.asarray(options.get("cap", cfg.cap_spot)) + rng.uniform(-j, j, 2)
         else:
-            supply, cap_xy = sample_layout(rng, self.layout, cfg)
+            supply, cap_xy = sample_layout(rng, self.layout, cfg, keep_out=self.forearm_keep_out)
             cap_xy = np.asarray(options.get("cap", cap_xy))
 
         if stage is not None:
