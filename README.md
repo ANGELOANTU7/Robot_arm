@@ -143,7 +143,7 @@ Robot_arm/
 
 ## Installation
 
-### Option 1: Python (pip)
+### Python
 
 Needs Python 3.10+ (tested on 3.12) and `git` (the robot models are downloaded from MuJoCo Menagerie the first
 time they are used).
@@ -156,28 +156,27 @@ pip install -e ".[dev,pose]"      # pose = RTMW arm tracking for the side-by-sid
 pytest                            # check the install
 ```
 
-Without a display (servers, containers), rendering needs `MUJOCO_GL=egl` (NVIDIA GPU) or `MUJOCO_GL=osmesa` (CPU).
+Without a display (servers), rendering needs `MUJOCO_GL=egl` (NVIDIA GPU) or `MUJOCO_GL=osmesa` (CPU).
 
-### Option 2: Docker
-
-```bash
-docker build -t robot_arm .
-docker run --rm -it robot_arm pytest                                          # check the image
-docker run --rm -it robot_arm python scripts/g1_evaluate.py --task full --episodes 20
-```
-
-The default image uses CPU-only PyTorch. With an NVIDIA GPU (for training and faster rendering; needs the
-NVIDIA Container Toolkit), build the CUDA version instead:
+### Docker
 
 ```bash
-docker build --build-arg TORCH_INDEX=https://pypi.org/simple -t robot_arm:gpu .
-docker run --rm -it --gpus all -e MUJOCO_GL=egl \
-    -v "$PWD/data:/app/data" -v "$PWD/runs:/app/runs" robot_arm:gpu bash
+git clone https://github.com/ANGELOANTU7/Robot_arm.git
+cd Robot_arm
+docker build -t robot_arm .                                                    # CPU-only PyTorch
+docker build --build-arg TORCH_INDEX=https://pypi.org/simple -t robot_arm:gpu .   # or: CUDA PyTorch, for an NVIDIA GPU
+docker run --rm robot_arm pytest                                               # check the image
 ```
 
-The `-v` options keep your videos, datasets and trained models on your machine instead of inside the container.
+The GPU image needs the NVIDIA Container Toolkit. The robot models are downloaded into the image while it builds.
 
 ## How to run
+
+`--task` is `place`, `toss` or `full`. `--policy` takes `scripted` (the hand-written experts) or trained
+checkpoints, e.g. `--policy place=runs/place_chunk/policy.pt,toss=runs/toss_dp/policy.pt`. Set `G1_HAND=shadow`
+for the 5-finger hand and `G1_REAL=1` for real-world limits.
+
+### With Python
 
 **Run the robot in simulation** with the hand-written experts (no training needed):
 
@@ -187,9 +186,6 @@ G1_HAND=shadow python scripts/g1_evaluate.py --task full --episodes 4 --videos r
 G1_HAND=shadow python scripts/g1_view.py --task full                            # watch it (needs a display)
 G1_HAND=shadow G1_REAL=1 python scripts/g1_evaluate.py --task full --episodes 20   # with real-world limits
 ```
-
-`--task` is `place`, `toss` or `full`; `--policy` takes `scripted` or trained checkpoints, e.g.
-`--policy place=runs/place_chunk/policy.pt,toss=runs/toss_dp/policy.pt`.
 
 **The whole pipeline from your own videos:**
 
@@ -216,6 +212,31 @@ python scripts/g1_evaluate.py --task full --episodes 96 --policy place=runs/plac
 
 No videos? `python scripts/g1_make_synthetic_human.py --n 10` makes synthetic human clips to try steps 3–5 on.
 All commands and options are in [docs/README_FULL.md](docs/README_FULL.md).
+
+### With Docker
+
+**Run the robot in simulation** (videos are saved to `runs/` on your machine through the `-v` mount):
+
+```bash
+docker run --rm -e G1_HAND=shadow robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 20                       # success rate on new layouts
+docker run --rm -e G1_HAND=shadow -v "$PWD/runs:/app/runs" robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 4 --videos runs/videos   # save mp4s
+docker run --rm -e G1_HAND=shadow -e G1_REAL=1 robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 20                       # with real-world limits
+```
+
+The live viewer (`g1_view.py`) needs a display, so it isn't available in the container; save videos instead.
+
+**The whole pipeline from your own videos:** open a shell in the container with your clips, data and models
+mounted, then run steps 2–5 from the Python section above unchanged:
+
+```bash
+docker run --rm -it -e G1_HAND=shadow \
+    -v "$PWD/my_videos:/app/my_videos" -v "$PWD/data:/app/data" -v "$PWD/runs:/app/runs" robot_arm bash
+```
+
+With an NVIDIA GPU, use the `robot_arm:gpu` image and add `--gpus all -e MUJOCO_GL=egl` to any `docker run` above.
 
 ## How I collected the dataset
 
