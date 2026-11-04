@@ -81,6 +81,7 @@ class G1HandController:
         # Position servos lag a moving target by (kv/kp) * velocity; commanding q + lag * qdot cancels that.
         self.lag = -model.actuator_biasprm[ids.arm_ctrl, 2] / model.actuator_gainprm[ids.arm_ctrl, 0]
         self.q_prev = None
+        self.max_speed = self.max_accel = None  # rad/s and rad/s^2 per joint, if set
 
     def solve(self, qpos: np.ndarray, target_pos: np.ndarray, target_mat: np.ndarray,
               q_start: np.ndarray | None = None, iters: int | None = None) -> np.ndarray:
@@ -128,12 +129,18 @@ class G1HandController:
 
     def reset(self) -> None:
         self.q_prev = None
+        self.dq_prev = np.zeros(len(self.ids.arm_qpos))
 
     def apply(self, data: mujoco.MjData, target_pos: np.ndarray, target_mat: np.ndarray, grip: float,
               dt: float, shape: str = "wrap") -> None:
         """Solve IK for the target and command it with velocity feed-forward (dt: time since the last call)."""
         start = self.q_prev if self.q_prev is not None else data.qpos[self.ids.arm_qpos].copy()
         q = self.solve(data.qpos, target_pos, target_mat, q_start=start)
+        if self.max_speed is not None:
+            q = start + np.clip(q - start, -self.max_speed * dt, self.max_speed * dt)
+            if self.max_accel is not None:  # no jerking the torso: its reaction lifts the robot off its feet
+                dq = np.clip(q - start, self.dq_prev - self.max_accel * dt ** 2, self.dq_prev + self.max_accel * dt ** 2)
+                q, self.dq_prev = start + dq, dq
         qdot = (q - start) / dt if self.q_prev is not None else 0.0
         self.q_prev = q
         data.ctrl[self.ids.arm_ctrl] = q + self.lag * qdot

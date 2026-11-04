@@ -110,12 +110,6 @@ class SkillDemo:
         """Toss clips: horizontal unit vector between the base cups, if they were found."""
         return np.array([self.info["axis_x"], self.info["axis_y"], 0.0]) if "axis_x" in self.info else None
 
-    def attempts(self) -> list[tuple[float, float]]:
-        """Toss clips: (grasp, release) times of every throw, the last one went in."""
-        n = int(self.info.get("throws", 1))
-        return [(self.info.get(f"throw{k}_grasp", self.t_grasp), self.info.get(f"throw{k}_release", self.t_release))
-                for k in range(n)]
-
 
 def smooth_rotations(R: np.ndarray, fps: float, seconds: float = 0.2) -> np.ndarray:
     """Smooth a rotation sequence by filtering its rotation vectors relative to the first frame."""

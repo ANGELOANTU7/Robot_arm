@@ -1,7 +1,7 @@
 """Constants for the G1 cup-pyramid task. Distances in metres, world frame: x forward, y left, z up."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class CupSpec:
 @dataclass(frozen=True)
 class G1TaskConfig:
     hand: str = "dex3"  # the G1's right hand: "dex3" (Unitree's three fingers) or "shadow" (five fingers; see hands.py)
+    real: bool = False  # the robot as hardware: balancing on its feet, real motor limits, heat, a new world each try (real.py)
     cup: CupSpec = CupSpec()
     # The thrown object: a plastic bottle cap (a short cylinder), 2.8 cm across.
     cap_radius: float = 0.014
@@ -102,19 +103,23 @@ class G1TaskConfig:
     def frame_skip(self) -> int:
         return int(round(self.control_dt / self.sim_dt))
 
-    @property
-    def table_top(self) -> float:
-        return self.table_height
-
 
 def task_config(hand: str = "dex3") -> G1TaskConfig:
     """The task with `hand`, with the values that hand needs (Hand.task: where it holds the cups, where the
     pyramid goes)."""
     from robot_arm.humanoid.hands import get_hand
 
-    return G1TaskConfig(hand=hand, **get_hand(hand).task)
+    cfg = G1TaskConfig(hand=hand, **get_hand(hand).task)
+    if os.environ.get("G1_REAL"):
+        from robot_arm.humanoid.real import PELVIS_HEIGHT
+
+        # Standing on bent knees lowers the robot; the table goes down with it, so the arm's task stays the same.
+        cfg = replace(cfg, real=True, table_height=cfg.table_height + PELVIS_HEIGHT - 0.793,
+                      base_gap=0.003,  # 2 mm is less than the camera can place: cup B then knocks cup A
+                      place_seconds=20.0)  # the arm is slower under load, and waits for alignment
+    return cfg
 
 
 # The hand every env, expert and evaluation uses by default; G1_HAND=shadow selects the five-fingered hand
-# everywhere, including in worker processes.
+# everywhere, including in worker processes. G1_REAL=1 does the same for the robot as hardware.
 G1_CFG = task_config(os.environ.get("G1_HAND", "dex3"))

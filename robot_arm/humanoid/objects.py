@@ -33,11 +33,6 @@ class PyramidLayout:
     def targets(self) -> list[np.ndarray]:
         return [self.base_a, self.base_b, self.top]
 
-    @property
-    def mouth_center(self) -> np.ndarray:
-        """Centre of the top cup's mouth: where the cap must go."""
-        return self.top + [0, 0, G1_CFG.cup.height]
-
 
 ORIENTATIONS = [DOWN, DOWN, UP]  # how each cup ends up in the pyramid
 START_ORIENTATIONS = [DOWN, DOWN, DOWN]  # all cups start mouth-down: the top cup is turned over on the way

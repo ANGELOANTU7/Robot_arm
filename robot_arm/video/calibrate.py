@@ -110,11 +110,6 @@ class Camera:
     def as_dict(self) -> dict:
         return {"K": self.K, "R": self.R, "t": self.t, "size": np.array([self.width, self.height])}
 
-    @classmethod
-    def from_dict(cls, d) -> "Camera":
-        w, h = (int(v) for v in d["size"])
-        return cls(np.asarray(d["K"]), np.asarray(d["R"]), np.asarray(d["t"]), w, h)
-
 
 def intrinsics_from_fov(width: int, height: int, hfov_deg: float = 68.0) -> np.ndarray:
     f = (width / 2) / np.tan(np.radians(hfov_deg) / 2)

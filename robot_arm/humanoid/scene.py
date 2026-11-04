@@ -33,6 +33,8 @@ READY = {
     "right_wrist_yaw_joint": -0.271,
 }
 
+WRIST_CAM_POS = (0.0, 0.0, 0.08)  # in the wrist frame, above the back of the hand
+WRIST_CAM_XYAXES = (0.27, -0.963, 0.0, 0.217, 0.061, 0.974)  # looking past the fingers at the grasp
 CUP_NAMES = ("cup0", "cup1", "cup2")  # two base cups (given mouth-down), the top cup (given mouth-up)
 
 # Collision bits: objects and the table touch everything; the right arm/hand touches objects and the table only.
@@ -110,8 +112,9 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
     spec.visual.global_.offwidth = 1280
     spec.visual.global_.offheight = 720
 
-    # Fixed pelvis: remove the floating base (the pelvis body keeps its stand height of 0.793 m).
-    spec.delete(spec.joint("floating_base_joint"))
+    # Fixed pelvis: remove the floating base (the pelvis body keeps its stand height of 0.793 m). G1_REAL keeps it.
+    if not cfg.real:
+        spec.delete(spec.joint("floating_base_joint"))
     for key in list(spec.keys):
         spec.delete(key)
     hand = get_hand(cfg.hand)
@@ -122,11 +125,13 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
     for body in spec.bodies:
         if body.name == "world":
             continue
-        body.gravcomp = 1.0  # like the real robot's feed-forward gravity compensation
+        body.gravcomp = 0.0 if cfg.real else 1.0  # like the real robot's feed-forward gravity compensation
         for g in body.geoms:
             if g.contype == 0 and g.conaffinity == 0:
                 continue  # visual geom
-            if body.name in right_colliders:
+            if cfg.real and body.name.endswith("ankle_roll_link") and g.type == mujoco.mjtGeom.mjGEOM_SPHERE:
+                g.contype, g.conaffinity = OBJ_TYPE, OBJ_AFF
+            elif body.name in right_colliders:
                 g.contype, g.conaffinity = HAND_TYPE, HAND_AFF
                 # Soft finger pads: high sliding and torsional friction, so a held cup does not swing.
                 g.friction = [1.5, 0.08, 0.002]
@@ -137,6 +142,13 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
 
     spec.body("right_wrist_yaw_link").add_site(name="grasp", pos=list(hand.grasp_site), size=[0.006, 0, 0],
                                                rgba=[1, 0, 0, 0.6], group=4)
+    # The robot's own cameras (for the VLA): the head RGB camera where the G1's D435 sits (on the torso, pitched
+    # 47.6 degrees down), and one on the wrist looking past the fingers. They move with the robot.
+    th = 0.8308
+    spec.body("torso_link").add_camera(name="head", pos=[0.0576, 0.0175, 0.4299], fovy=85,
+                                       xyaxes=[0, -1, 0, np.sin(th), 0, np.cos(th)])
+    spec.body("right_wrist_yaw_link").add_camera(name="wrist", pos=list(WRIST_CAM_POS), fovy=80,
+                                                 xyaxes=list(WRIST_CAM_XYAXES))
 
     world = spec.worldbody
     cx, cy = cfg.table_center
@@ -162,7 +174,31 @@ def build_spec(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjSpec:
 
 
 def build_model(cfg: G1TaskConfig = G1_CFG) -> mujoco.MjModel:
-    return build_spec(cfg).compile()
+    spec = build_spec(cfg)
+    if not cfg.real:
+        return spec.compile()
+    from robot_arm.humanoid.real import HAND_KG, spec_of
+
+    model = spec.compile()
+    hand = get_hand(cfg.hand)
+    hand_bodies = [b for b in range(model.nbody) if model.body(b).name.startswith(hand.prefix)]
+    # The weight of a real hand sits in its palm and motors, not in the fingers.
+    palm = hand_bodies[0]
+    factor = 1 + (HAND_KG - model.body_mass[hand_bodies].sum()) / model.body_mass[palm]
+    model.body_mass[palm] *= factor
+    model.body_inertia[palm] *= factor
+    for a in range(model.nu):
+        if model.actuator_trntype[a] != mujoco.mjtTrn.mjTRN_JOINT:
+            continue  # (a tendon of the hand)
+        joint = model.actuator_trnid[a, 0]
+        name = model.joint(joint).name
+        if name.startswith(hand.prefix) or "_hand_" in name:
+            continue
+        peak, _, kp, kd = spec_of(name)
+        model.jnt_actfrcrange[joint] = -peak, peak
+        model.actuator_gainprm[a, 0], model.actuator_biasprm[a, 1], model.actuator_biasprm[a, 2] = kp, -kp, -kd
+        model.actuator_ctrllimited[a] = 0  # targets carry the gravity feed-forward, so they can pass the joint's range
+    return model
 
 
 class G1Ids:
@@ -189,7 +225,6 @@ class G1Ids:
         self.hand_body = model.body("right_wrist_yaw_link").id
         self.cup_bodies = [model.body(n).id for n in CUP_NAMES]
         self.cup_qpos = [jq(f"{n}_joint") for n in CUP_NAMES]
-        self.cup_dofs = [jd(f"{n}_joint") for n in CUP_NAMES]
         self.cup_geoms = [{g for g in range(model.ngeom) if model.geom_bodyid[g] == b} for b in self.cup_bodies]
         self.cap_body = model.body("cap").id
         self.cap_qpos = jq("cap_joint")
@@ -197,11 +232,17 @@ class G1Ids:
         self.cap_geom = model.geom("cap_geom").id
         self.hand_geoms = {g for g in range(model.ngeom)
                            if model.geom_contype[g] == HAND_TYPE}
-        self.table_geom = model.geom("table").id
         self.stand_qpos = np.zeros(model.nq)
         for name, value in STAND.items():
             if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0:  # (the Dex3's thumb, if fitted)
                 self.stand_qpos[jq(name)] = value
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint") >= 0:
+            from robot_arm.humanoid.real import PELVIS_HEIGHT, STAND_LEGS
+
+            self.stand_qpos[jq("floating_base_joint"):jq("floating_base_joint") + 7] = 0, 0, PELVIS_HEIGHT, 1, 0, 0, 0
+            for side in ("left", "right"):
+                for name, value in STAND_LEGS.items():
+                    self.stand_qpos[jq(f"{side}_{name}")] = value
         self.ready_qpos = self.stand_qpos.copy()
         for name, value in READY.items():
             self.ready_qpos[jq(name)] = value

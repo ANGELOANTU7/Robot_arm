@@ -42,9 +42,3 @@ def pinch_point_cam(image_px: np.ndarray, world_m: np.ndarray, K: np.ndarray) ->
 def aperture(world_m: np.ndarray) -> float:
     """Thumb-tip to index-tip distance (metres); independent of the camera distance."""
     return float(np.linalg.norm(world_m[THUMB_TIP] - world_m[INDEX_TIP]))
-
-
-def reprojection_error(image_px: np.ndarray, world_m: np.ndarray, K: np.ndarray, T: np.ndarray) -> float:
-    pc = world_m + T
-    uv = pc @ K.T
-    return float(np.linalg.norm(uv[:, :2] / uv[:, 2:3] - image_px, axis=1).mean())

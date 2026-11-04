@@ -6,7 +6,7 @@ from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.controller import pinch_frame, rotation_error, rotvec_to_mat, site_for_pinch
 from robot_arm.humanoid.hands import get_hand
 from robot_arm.humanoid.envs import (OBS_CAP, OBS_CAP_VEL, OBS_CMD_POS, OBS_CMD_ROT, OBS_HAND_ROT, OBS_SITE,
-                                     OBS_STAGE, OBS_TARGET, THUMBS_UP, TOSS, obs_cup)
+                                     OBS_STAGE, OBS_TARGET, THUMBS_UP, obs_cup)
 from robot_arm.humanoid.objects import (ORIENTATIONS, UP, cup_grasp_point, cup_lowest_z, cup_table_point,
                                         reach_heading)
 
@@ -115,6 +115,9 @@ class PlaceExpert:
         self.align_tol, self.top_yaw_rel, self.flip_dir = given["align_tol"], given["top_yaw_rel"], given["flip_dir"]
         self.cfg, self.yaw, self.pre_dist, self.drop = cfg, yaw, pre_dist, drop
         self.place_yaw, self.top_place_yaw = place_yaw, top_place_yaw
+        if cfg.real:
+            flip_wait = 12  # the heavier hand needs a moment to settle after letting go
+            self.top_yaw_rel, self.top_place_yaw = None, 0.0  # the same heading whatever the base cups did
         self.flip_taper_sign, self.flip_wait = flip_taper_sign, flip_wait
         self.flip_exit_rise, self.flip_exit_speed = flip_exit_rise, flip_exit_speed
         self.flip_offset, self.flip_exit_out = flip_offset, flip_exit_out
@@ -122,6 +125,7 @@ class PlaceExpert:
 
     def reset(self):
         self.phase, self.timer, self.stage = "rise", 0, None
+        self.open_at = None
         self.flip, self.flipped, self.R_hold = None, False, None
         self.yaw_g = self.yaw_p = None
         self.z_hist = []
@@ -179,6 +183,8 @@ class PlaceExpert:
 
         if self.phase == "rise":
             goal = np.array([site[0], site[1], safe_z])
+            if cfg.real and site[2] < T + h + 0.12:  # the fingers may still be around the last cup: don't turn yet
+                R = obs_hand_mat(obs)
             if near(goal, 0.03):
                 self.phase = "over_pre"
         if self.phase == "over_pre":
@@ -225,8 +231,10 @@ class PlaceExpert:
         if self.phase == "carry":
             goal, grip = np.array([*(target_tp[:2] + cup_offset[:2]), carry_z]), 1.0
             off = np.linalg.norm(cup_tp[:2] - target_tp[:2])
-            if off < self.align_tol or (self.timer > 20 and off < 2 * self.align_tol) or \
-                    (self.timer > 40 and off < 0.012):
+            # (The real robot's delay makes this settle slower. Coming down early brings a wide rim onto a standing cup.)
+            patience = 3 if cfg.real else 1
+            if off < self.align_tol or (self.timer > 20 * patience and off < 2 * self.align_tol) or \
+                    (self.timer > 40 * patience and off < 0.012):
                 self.phase = "lower"
         if self.phase == "lower":
             goal, grip = target_tp + cup_offset + [0, 0, 0.002], 1.0
@@ -243,9 +251,13 @@ class PlaceExpert:
         # cup, so it only loosens its grip until it is out of the cup.
         loosen = FLIP_RELEASE if self.flipped else -1.0
         if self.phase == "open":
-            goal, grip = site, loosen
+            if self.open_at is None:
+                self.open_at = site.copy()
+            # Held where it let go: "stay where you are" lets a heavy hand on soft servos creep down onto the cup.
+            goal, grip = (self.open_at if cfg.real else site), loosen
             if self.timer > OPEN_STEPS + (self.flip_wait if self.flipped else 0):  # fully open (see release_rate)
                 self.phase, self.back_from = ("back" if k == 2 else "up"), site.copy()
+                self.timer = 0
         if self.phase == "back":
             exit_dir = -xh_p + (np.array([0, 0, self.flip_exit_rise]) if self.flipped else 0.0)
             if self.flipped and self.flip_exit_out is not None:  # up, and out along the cup's sloping wall
@@ -255,10 +267,14 @@ class PlaceExpert:
             if self.flipped:
                 speed_back = self.flip_exit_speed * cfg.max_step
                 goal = site + np.clip(goal - site, -speed_back, speed_back)
-            if near(self.back_from + BACK_OFF * exit_dir / np.linalg.norm(exit_dir), 0.01):
+            if near(self.back_from + BACK_OFF * exit_dir / np.linalg.norm(exit_dir), 0.01) or (cfg.real and self.timer > 40):
                 self.phase = "up"
         if self.phase == "up":
             goal = np.array([site[0], site[1], safe_z])
+            if cfg.real and self.flipped:  # a hand turned over leaves slowly, and away from the cup it has just left
+                away = site[:2] - cup_pos[:2]
+                goal[:2] += 0.04 * away / max(np.linalg.norm(away), 1e-6)
+                goal = site + np.clip(goal - site, -0.4 * cfg.max_step, 0.4 * cfg.max_step)
         return to_action(obs, goal, R, grip, cfg.max_step, cfg)
 
 
@@ -284,6 +300,8 @@ class TossExpert:
                  speed_gain: float = 1.0, aim_offset=(0.0, 0.0, 0.0), carry_time: float = 0.05,
                  close_steps: int = 6, pinch_depth: float = 0.008, correction: float = 0.8):
         self.cfg, self.correction, self.hand = cfg, correction, get_hand(cfg.hand)
+        if cfg.real:  # calibrated on the real arm's lag: a longer swing, released by position (see "swing")
+            windup, speed_gain, aim_offset = 0.26, 0.85, (-0.02, 0.03, 0.0)
         self.flight_time, self.release_dist, self.release_height = flight_time, release_dist, release_height
         self.release_bearing, self.windup, self.speed_gain = release_bearing, windup, speed_gain
         self.aim_offset = np.asarray(aim_offset, float)
@@ -295,6 +313,7 @@ class TossExpert:
         self.plan, self.aimed, self.retries = None, False, 0
         self.attempt, self.aim = 0, np.zeros(3)
         self.miss, self.still, self.resets = None, 0, 0
+        self.release_t = None
 
     def next_attempt(self):
         """After a miss: aim off by the miss, and go and pick the cap up again."""
@@ -453,15 +472,17 @@ class TossExpert:
             else:
                 tb = tau - t_acc
                 p = R_pt + v_cmd * tb - np.array([0, 0, 0.5 * GRAVITY * tb ** 2])
-                grip = -1.0
-                if tb > self.carry_time:
-                    self.phase, self.drop_from = "release", p
+                # A lagging arm is not there yet when the clock says so: let go when the cap has reached the release
+                # point, or it leaves short and slow.
+                there = (cap - R_pt) @ vhat > 0 or tau > 2.5 * t_acc
+                if not cfg.real or there:
+                    grip = -1.0
+                    if cfg.real:
+                        self.release_t = self.release_t or tau
+                    if not cfg.real and tb > self.carry_time or cfg.real and tau - self.release_t > self.carry_time:
+                        self.phase, self.drop_from = "release", p
             goal, frame_cmd, speed = self.site_for(p, frame), frame, None
         if self.phase == "release":  # stop, and pull the hand up and back out of the cap's way
             goal = self.site_for(self.drop_from - 0.08 * throw_dir + [0, 0, 0.08], frame)
             frame_cmd, speed = frame, None
         return to_action(obs, goal, frame_cmd, grip, cfg.toss_max_step, cfg, speed=speed)
-
-
-def expert_for(obs: np.ndarray, place: PlaceExpert, toss: TossExpert):
-    return toss if int(np.argmax(obs[OBS_STAGE])) >= TOSS else place

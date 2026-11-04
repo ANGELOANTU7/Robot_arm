@@ -21,3 +21,7 @@ logs/
 # Videos of every simulated try (robot_arm/humanoid/trylog.py), and local experiment output
 try_videos/
 scratch/
+
+# Local virtual environments and tracked landmark caches
+.venv*/
+data/landmarks/

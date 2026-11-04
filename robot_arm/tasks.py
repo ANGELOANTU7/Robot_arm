@@ -54,9 +54,10 @@ def get_task(name: str) -> TaskSpec:
         from robot_arm.env import ACT_DIM, OBS_DIM, OBS_GRIP
         return TaskSpec(name, OBS_DIM, ACT_DIM, OBS_GRIP, _panda_env, _panda_eval)
     if name in ("g1-place", "g1-toss"):
-        from robot_arm.humanoid.envs import ACT_DIM, OBS_DIM, OBS_GRIP
+        from robot_arm.humanoid.config import G1_CFG
+        from robot_arm.humanoid.envs import ACT_DIM, OBS_DIM, OBS_DIM_REAL, OBS_GRIP
         task = name.split("-")[1]
-        return TaskSpec(name, OBS_DIM, ACT_DIM, OBS_GRIP, _g1_env(task), _g1_eval(task))
+        return TaskSpec(name, OBS_DIM_REAL if G1_CFG.real else OBS_DIM, ACT_DIM, OBS_GRIP, _g1_env(task), _g1_eval(task))
     raise ValueError(f"Unknown task {name!r}: use panda, g1-place or g1-toss")
 
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "robot_arm"
 version = "0.1.0"
-description = "Teach a simulated Franka Panda to pick a ball and drop it in a cup from your own videos (MuJoCo)."
+description = "Teach a simulated humanoid (Unitree G1) to stack cups and throw a cap from phone videos (MuJoCo)."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+pose = ["rtmlib", "onnxruntime"]  # RTMW arm tracking (scripts/g1_track_landmarks.py)
 
 [tool.setuptools.packages.find]
 include = ["robot_arm*"]

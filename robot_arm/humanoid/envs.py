@@ -17,10 +17,10 @@ import numpy as np
 from robot_arm.humanoid.config import G1_CFG, G1TaskConfig
 from robot_arm.humanoid.controller import (G1HandController, hand_targets, pinch_frame, rotation_error,
                                            rotvec_to_mat, site_for_pinch)
-from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, START_ORIENTATIONS, TOP_TILT_DEG, UP, PyramidLayout,
+from robot_arm.humanoid.objects import (DOWN, ORIENTATIONS, START_ORIENTATIONS, UP, PyramidLayout,
                                         base_pair_ok, base_spacing, cap_in_cup, cup_axis, cup_grasp_point,
                                         cup_in_place, pyramid_standing, sample_layout, top_cup_resting)
-from robot_arm.humanoid.scene import RIGHT_ARM_COLLIDERS, G1Ids, build_model
+from robot_arm.humanoid.scene import OBJ_TYPE, RIGHT_ARM_COLLIDERS, G1Ids, build_model
 
 N_STAGES = 5  # place cup0, place cup1, place cup2, toss, thumbs-up
 TOSS, THUMBS_UP = 3, 4
@@ -39,6 +39,9 @@ OBS_GRIP = 74
 OBS_CMD_POS = slice(75, 78)  # commanded grasp-site position - actual
 OBS_CMD_ROT = slice(78, 81)  # rotation from the actual hand orientation to the commanded one
 OBS_DIM = 81
+# With cfg.real these follow: pelvis position (3), the pelvis's up axis (3), arm motor temperatures (10).
+OBS_REAL = slice(81, 97)
+OBS_DIM_REAL = 97
 ACT_DIM = 7  # palm translation (3), palm rotation (3), grip (1: -1 open .. 1 closed)
 
 
@@ -58,11 +61,24 @@ class G1PyramidEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         self.ids = G1Ids(self.model)
         self.controller = G1HandController(self.model, self.ids)
+        self.body, self.seen = None, None
+        if cfg.real:
+            from robot_arm.humanoid.real import REAL, RealBody, spec_of
+
+            self.body = RealBody(self.model, self.data, self.ids)
+            self.controller.max_speed = np.minimum(REAL.speed_margin * np.array([spec_of(n)[1] for n in self.ids.arm_names]),
+                                                   REAL.working_speed)
+            self.controller.max_speed[:3] = REAL.waist_speed
+            self.controller.posture_gain = REAL.posture_gain
+            self.controller.max_accel = np.full(10, np.inf)
+            self.controller.max_accel[:3] = REAL.waist_accel
+            self.controller.joint_scale[:3] = 1.0 / REAL.waist_weight
         self.pinch_posture = self._pinch_posture(cfg.cap_spot)
         self.forearm_keep_out = self._forearm_keep_out()
         self.render_mode, self.camera = render_mode, camera
         self._renderer = mujoco.Renderer(self.model, height, width) if render_mode else None
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (OBS_DIM_REAL if cfg.real else OBS_DIM,),
+                                                np.float32)
         self.action_space = gym.spaces.Box(-1.0, 1.0, (ACT_DIM,), np.float32)
         seconds = {"place": cfg.place_seconds, "toss": cfg.toss_seconds,
                    "full": 3 * cfg.place_seconds + cfg.toss_seconds}[task]
@@ -121,11 +137,11 @@ class G1PyramidEnv(gym.Env):
         return self.data.xmat[self.ids.hand_body].reshape(3, 3).copy()
 
     def cup_pos(self, k: int) -> np.ndarray:
-        return self.data.xpos[self.ids.cup_bodies[k]].copy()
+        return self.seen[k].copy() if self.seen is not None else self.data.xpos[self.ids.cup_bodies[k]].copy()
 
     @property
     def cap_pos(self) -> np.ndarray:
-        return self.data.xpos[self.ids.cap_body].copy()
+        return self.seen[3].copy() if self.seen is not None else self.data.xpos[self.ids.cap_body].copy()
 
     @property
     def thumb_up(self) -> float:
@@ -143,12 +159,6 @@ class G1PyramidEnv(gym.Env):
                 return True
         return False
 
-    def touches(self, a: set, b: set) -> bool:
-        for c in self.data.contact[: self.data.ncon]:
-            if (c.geom1 in a and c.geom2 in b) or (c.geom2 in a and c.geom1 in b):
-                return True
-        return False
-
     # ------------------------------------------------------------------ reset
     def _set_free(self, qadr: int, pos, quat):
         self.data.qpos[qadr:qadr + 3] = pos
@@ -159,6 +169,8 @@ class G1PyramidEnv(gym.Env):
         options = options or {}
         if self.task != "toss":
             return self._reset_scene(options)
+        if self.cfg.real:  # a pyramid already standing, the hand at its ready pose: the throw alone
+            return self._reset_scene(options, stage=TOSS)
         # The throw starts where it does in the full task: the robot has just let go of the top cup it put on
         # the base cups, with the hand still around it. The scripted expert places it (a few tries if needed).
         from robot_arm.humanoid.scripted import PlaceExpert
@@ -184,6 +196,9 @@ class G1PyramidEnv(gym.Env):
         rng, cfg = self.np_random, self.cfg
         m, d, ids = self.model, self.data, self.ids
         mujoco.mj_resetData(m, d)
+        if self.body is not None:
+            self.body.sample_world(rng)
+        self.seen = None
         d.qpos[:] = ids.ready_qpos
         d.qpos[ids.arm_qpos[3:]] += rng.normal(0, 0.03, 7)
 
@@ -225,12 +240,16 @@ class G1PyramidEnv(gym.Env):
         self.pinch_ready = False
         d.ctrl[ids.hand_ctrl] = hand_targets(-1.0, "wrap", ids.hand)
         mujoco.mj_forward(m, d)
-        mujoco.mj_step(m, d, nstep=100)  # let everything settle
+        if self.body is not None:
+            self._settle_on_feet()
+        else:
+            mujoco.mj_step(m, d, nstep=100)  # let everything settle
 
         self.grip = -1.0
         self.hand_state = -1.0
         self.cmd_pos, self.cmd_mat = self.site_pos, self.hand_mat
         self.controller.reset()
+        self.seen = None
         self.steps = 0
         # Where each finished cup was left; it must stay there.
         self.placed = {k: self.cup_pos(k) for k in range(prebuilt)}
@@ -241,6 +260,19 @@ class G1PyramidEnv(gym.Env):
         self.fail_reason = None
         self._phi = self._potential()
         return self._obs(), self._info(False)
+
+    def _settle_on_feet(self):
+        m, d, body = self.model, self.data, self.body
+        drop = min(d.geom_xpos[g][2] - m.geom_size[g][0] for g in range(m.ngeom)
+                   if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_SPHERE and m.geom_contype[g] == OBJ_TYPE)
+        d.qpos[2] -= drop  # the soles on the floor
+        mujoco.mj_forward(m, d)
+        arm = d.ctrl[self.ids.arm_ctrl].copy()
+        body.stand_reset()
+        for _ in range(int(0.4 / (self.cfg.control_dt / self.cfg.ik_substeps))):
+            d.ctrl[self.ids.arm_ctrl] = arm
+            body.tick(self.cfg.control_dt / self.cfg.ik_substeps)
+            mujoco.mj_step(m, d, nstep=self.cfg.frame_skip // self.cfg.ik_substeps)
 
     # ------------------------------------------------------------------ goals
     def stage_target(self) -> np.ndarray:
@@ -284,15 +316,18 @@ class G1PyramidEnv(gym.Env):
         # Actions move a stored command pose, so a zero action holds the arm still and a stop is a real stop.
         # A leash keeps the command near the actual hand (e.g. when pushing against the table).
         leash = cfg.leash * (self.max_step() / cfg.max_step)
+        if cfg.real:  # the command only runs ahead of the hand as far as this step asks: the throw's reach is for the swing
+            leash = max(cfg.leash, min(leash, 1.5 * float(np.abs(a[:3]).max()) * self.max_step()))
         site = self.site_pos
         prev_pos, prev_mat = self.cmd_pos.copy(), self.cmd_mat.copy()
         target_pos = self.cmd_pos + a[:3] * self.max_step()
         self.cmd_pos = np.clip(site + np.clip(target_pos - site, -leash, leash), self.ws_lo, self.ws_hi)
         self.cmd_mat = rotvec_to_mat(a[3:6] * cfg.max_rot_step) @ self.cmd_mat
-        if np.linalg.norm(rotation_error(self.hand_mat, self.cmd_mat)) > cfg.rot_leash:
+        rot_leash = 0.12 if cfg.real else cfg.rot_leash
+        if np.linalg.norm(rotation_error(self.hand_mat, self.cmd_mat)) > rot_leash:
             # Pull the commanded orientation back towards the actual one.
             err = rotation_error(self.hand_mat, self.cmd_mat)
-            self.cmd_mat = rotvec_to_mat(err * cfg.rot_leash / np.linalg.norm(err)) @ self.hand_mat
+            self.cmd_mat = rotvec_to_mat(err * rot_leash / np.linalg.norm(err)) @ self.hand_mat
         self.grip = float(a[6])
         # Fingers move at a finite speed (a snap-open flings a light cup away); a throw needs a quick release.
         close, open_ = (cfg.toss_grip_rate,) * 2 if self.stage == TOSS else (cfg.grip_rate, cfg.release_rate)
@@ -307,11 +342,14 @@ class G1PyramidEnv(gym.Env):
         pinch = self.stage == TOSS and self.pinch_ready
         shape = "pinch" if pinch else "thumbs_up" if self.stage == THUMBS_UP else "wrap"
         self.controller.posture = self.pinch_posture if pinch else self.controller.home
+        late = 0 if self.body is None else self.body.action_delay  # the new command reaches the servos this many ticks late
         for i in range(1, n + 1):
-            f = i / n
+            f = max(i - late, 0) / (n - late)
             self.controller.apply(self.data, prev_pos + f * (self.cmd_pos - prev_pos),
                                   rotvec_to_mat(f * rot) @ prev_mat, self.hand_state, cfg.control_dt / n,
                                   shape=shape)
+            if self.body is not None:
+                self.body.tick(cfg.control_dt / n)
             mujoco.mj_step(self.model, self.data, nstep=cfg.frame_skip // n)
         self.steps += 1
 
@@ -363,6 +401,11 @@ class G1PyramidEnv(gym.Env):
         T = cfg.table_height
         if not np.isfinite(d.qpos).all() or d.warning[mujoco.mjtWarning.mjWARN_BADQACC].number > 0:
             return self._fail("simulation became unstable")
+        if self.body is not None:
+            if self.body.fallen:
+                return self._fail("robot fell")
+            if self.body.fault:
+                return self._fail(self.body.fault)
         for k in range(3):
             if self.cup_pos(k)[2] < T - 0.03:
                 return self._fail(f"cup{k} fell off the table")
@@ -445,6 +488,21 @@ class G1PyramidEnv(gym.Env):
 
     # ------------------------------------------------------------------ observation
     def _obs(self) -> np.ndarray:
+        if self.body is None:
+            return self._read_obs()
+        ids = self.ids
+        truth = np.array([self.data.xpos[b] for b in ids.cup_bodies] + [self.data.xpos[ids.cap_body]])
+        self.seen = self.body.camera(truth, self.site_pos, self.hand_mat, self.grip > 0, min(self.stage, 3))  # during this, the objects are where the robot believes
+        try:
+            obs = self._read_obs()
+        finally:
+            self.seen = None
+        obs[:10] += self.body.rng.normal(0, self.body.spec.joint_noise, 10)
+        pelvis = self.data.xpos[self.body.pelvis]
+        up = self.data.xmat[self.body.pelvis][6:9]
+        return np.concatenate([obs, pelvis, up, self.body.arm_temps / 100]).astype(np.float32)
+
+    def _read_obs(self) -> np.ndarray:
         d, ids = self.data, self.ids
         cups = np.concatenate([np.concatenate([self.cup_pos(k), cup_axis(d, ids.cup_bodies[k])]) for k in range(3)])
         cap_vel = d.qvel[ids.cap_dof:ids.cap_dof + 3]
@@ -460,14 +518,19 @@ class G1PyramidEnv(gym.Env):
         return obs.astype(np.float32)
 
     def _info(self, success: bool) -> dict:
+        # How much the placed cups were disturbed this step (for reward terms outside the env, e.g. VLA + RL):
+        # the hand touching one, and the farthest any of them has moved from where it was left, in metres.
+        placed = set().union(*(self.ids.cup_geoms[k] for k in self.placed)) if self.placed else set()
+        shift = max((float(np.linalg.norm(self.cup_pos(k) - p)) for k, p in self.placed.items()), default=0.0)
         return {"is_success": bool(success), "stage": int(self.stage), "events": list(self.events),
-                "release_distance": self.release_distance, "fail_reason": self.fail_reason, "misses": self.misses}
+                "release_distance": self.release_distance, "fail_reason": self.fail_reason, "misses": self.misses,
+                "placed_touch": bool(placed) and self.hand_touches(placed), "placed_shift": shift}
 
-    def render(self):
+    def render(self, camera: str | None = None):
         if self._renderer is None:
             raise RuntimeError("Create the env with render_mode='rgb_array' to render.")
         opt = mujoco.MjvOption()
-        self._renderer.update_scene(self.data, camera=self.camera, scene_option=opt)
+        self._renderer.update_scene(self.data, camera=camera or self.camera, scene_option=opt)
         return self._renderer.render()
 
     def close(self):

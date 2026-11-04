@@ -123,24 +123,7 @@ def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes:
 
     Every episode draws one human demo per place stage (place_base for both base cups, place_top for the top
     cup) and one throw style. With `place_only`, "full" episodes end once the pyramid stands."""
-    from robot_arm.humanoid.envs import TOSS
-    from robot_arm.humanoid.retarget import place_demos_by_cup
-
-    rng = np.random.default_rng(seed)
-    if not demos.get("place_base") or not demos.get("place_top") or not styles:
-        raise ValueError("Need at least one place_base, one place_top and one toss demo.")
-    base_a, base_b, top = place_demos_by_cup(demos)
-    tasks, probs = zip(*task_mix)
-    jobs, meta = [], []
-    for _ in range(episodes):
-        task = str(rng.choice(tasks, p=np.array(probs) / sum(probs)))
-        ia, ib, it, js = (int(rng.integers(len(base_a))), int(rng.integers(len(base_b))),
-                          int(rng.integers(len(top))), int(rng.integers(len(styles))))
-        place = {0: base_a[ia], 1: base_b[ib], 2: top[it]}
-        ep_noise = 0.0 if rng.random() < clean_fraction else noise
-        jobs.append((task, place, styles[js], int(rng.integers(1 << 30)), ep_noise, TOSS if place_only else None))
-        meta.append({"task": task, "demos": [ia, ib, it], "style": js, "noise": ep_noise})
-
+    jobs, meta = g1_jobs(demos, styles, episodes, noise, clean_fraction, task_mix, seed, place_only)
     with get_context("spawn").Pool(workers) as pool:
         results = pool.map(_worker, jobs, chunksize=2)
 
@@ -158,6 +141,29 @@ def generate_g1(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes:
             out[key] = {"obs": np.concatenate(o), "actions": np.concatenate(a), "episode": np.concatenate(ep),
                         "stage": np.concatenate(st)}
     return out
+
+
+def g1_jobs(demos: dict[str, list[SkillDemo]], styles: list[dict], episodes: int, noise: float,
+            clean_fraction: float, task_mix, seed: int, place_only: bool) -> tuple[list[tuple], list[dict]]:
+    """The episodes of `generate_g1`: (task, place demos, throw style, seed, noise, stop stage) and their meta."""
+    from robot_arm.humanoid.envs import TOSS
+    from robot_arm.humanoid.retarget import place_demos_by_cup
+
+    rng = np.random.default_rng(seed)
+    if not demos.get("place_base") or not demos.get("place_top") or not styles:
+        raise ValueError("Need at least one place_base, one place_top and one toss demo.")
+    base_a, base_b, top = place_demos_by_cup(demos)
+    tasks, probs = zip(*task_mix)
+    jobs, meta = [], []
+    for _ in range(episodes):
+        task = str(rng.choice(tasks, p=np.array(probs) / sum(probs)))
+        ia, ib, it, js = (int(rng.integers(len(base_a))), int(rng.integers(len(base_b))),
+                          int(rng.integers(len(top))), int(rng.integers(len(styles))))
+        place = {0: base_a[ia], 1: base_b[ib], 2: top[it]}
+        ep_noise = 0.0 if rng.random() < clean_fraction else noise
+        jobs.append((task, place, styles[js], int(rng.integers(1 << 30)), ep_noise, TOSS if place_only else None))
+        meta.append({"task": task, "demos": [ia, ib, it], "style": js, "noise": ep_noise})
+    return jobs, meta
 
 
 _LEARNERS = {}

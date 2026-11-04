@@ -1,0 +1,11 @@
+.venv*
+data/
+runs/
+logs/
+try_videos/
+sim_videos/
+third_party/
+dataset_2/
+**/__pycache__
+*.egg-info
+MUJOCO_LOG.TXT

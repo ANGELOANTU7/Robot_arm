@@ -523,7 +523,8 @@ def rollout(env: G1PyramidEnv, policy: G1Retargeter, rng: np.random.Generator, n
     """Run the retargeted experts. DART: noise on the executed motion (not the labels, not the grip, and not
     during contact phases). Returns observations, labels, the stage of every step, per-stage success, frames.
     With `name` and TRY_VIDEOS set, the try is saved as a video (see trylog.py). With `stop_stage`, the episode
-    ends (as a success) once it gets there, e.g. TOSS when only the placing is wanted."""
+    ends (as a success) once it gets there, e.g. TOSS when only the placing is wanted. `render` may also be a list
+    of camera names: each step's frames are then those views, taken with its observation."""
     obs, _ = env.reset(seed=seed, options=options)
     policy.reset()
     tries = trylog.TryRecorder(env, name, f"retargeted demo, noise {noise}") if name and trylog.try_dir() else None
@@ -542,10 +543,12 @@ def rollout(env: G1PyramidEnv, policy: G1Retargeter, rng: np.random.Generator, n
         observations.append(obs)
         labels.append(action)
         stages.append(stage)
+        if render and render is not True:  # camera names: the views this observation was taken with
+            frames.append([env.render(c) for c in render])
         obs, _, terminated, truncated, info = env.step(executed)
         if env.stage != stage or info["is_success"]:
             done_stages.add(stage)
-        if render:
+        if render is True:
             frames.append(env.render())
         if tries is not None:
             tries.step(len(labels) - 1)
