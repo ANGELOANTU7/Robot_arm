@@ -426,5 +426,4 @@ balance, delays, camera errors) and retrained. See
 - [docs/README_FULL.md](docs/README_FULL.md): the full technical write-up (how each step works, all commands)
 - [docs/DECISIONS_LOG.md](docs/DECISIONS_LOG.md): every problem and decision along the way
 - [docs/RECORDING_PYRAMID.md](docs/RECORDING_PYRAMID.md): how to record your own videos
-- [docs/HANDOFF_FIVE_FINGER.md](docs/HANDOFF_FIVE_FINGER.md): the 5-finger hand work
 - [sim_videos/](sim_videos/README.md): videos of the robot's tries, failures included

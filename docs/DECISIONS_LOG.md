@@ -2,7 +2,7 @@
 
 Every issue and decision since the project began. New rows are added as the work happens, not afterwards.
 
-Dates before 2026-11-01 come from the git history and the handover documents. Where a decision wasn't dated in those,
+Dates before 2026-11-01 come from the git history and earlier notes. Where a decision wasn't dated in those,
 the date is that of the commit that holds it. "Resolved" means: **Yes**, **Partly**, **No**, or **Open** (being worked
 on now). Tries are out of the number shown; 32 tries are good to about ±8 points, 96 to about ±5.
 
@@ -176,4 +176,4 @@ on now). Tries are out of the number shown; 32 tries are good to about ±8 point
 | 68 | 11-02 | Simulation can't prove the real result | Only a scored run on the robot can | No | No hardware yet | Six steps: hardware, measure, camera, retrain, safe tests, 96 scored tries |
 | 69 | 11-02 | Thin plastic cups bend when gripped | Cups are rigid in simulation | No | Grip force effects unknown | Test real cups; add a force limit |
 
-| 126 | 11-04 | User: remove all unnecessary code | Chose (with the user) three groups. Deleted: 13 run-queue shell scripts in scripts/ (real*_queue, real_score, throw_queue, vla*_queue, vla_rl_*), unreferenced; MUJOCO_LOG.TXT, robot_arm.egg-info, __pycache__. Removed code nothing calls: G1TaskConfig.table_top, G1PyramidEnv.touches, PyramidLayout.mouth_center, scripted.expert_for, Camera.from_dict, lift3d.reprojection_error, SkillTrack.attempts, unused attributes in real.py (base_dofs, q_adr, left_v, foot_mat, pelvis_ref) and scene.py (cup_dofs, table_geom), and the imports they left unused (TOSS in scripted.py, TOP_TILT_DEG in envs.py) | Yes | Only throw_queue.sh was in git; the other scripts are gone for good. Kept PoseTracker (handover docs plan to use it) and the Panda code (method 1) | — |
+| 126 | 11-04 | User: remove all unnecessary code | Chose (with the user) three groups. Deleted: 13 run-queue shell scripts in scripts/ (real*_queue, real_score, throw_queue, vla*_queue, vla_rl_*), unreferenced; MUJOCO_LOG.TXT, robot_arm.egg-info, __pycache__. Removed code nothing calls: G1TaskConfig.table_top, G1PyramidEnv.touches, PyramidLayout.mouth_center, scripted.expert_for, Camera.from_dict, lift3d.reprojection_error, SkillTrack.attempts, unused attributes in real.py (base_dofs, q_adr, left_v, foot_mat, pelvis_ref) and scene.py (cup_dofs, table_geom), and the imports they left unused (TOSS in scripted.py, TOP_TILT_DEG in envs.py) | Yes | Only throw_queue.sh was in git; the other scripts are gone for good. Kept PoseTracker (may be used for arm tracking later) and the Panda code (method 1) | — |

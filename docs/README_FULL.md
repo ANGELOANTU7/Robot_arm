@@ -231,8 +231,7 @@ cup and the pyramid standing. Everything ran in this container (4 CPU cores, no 
   G1's wrist, everywhere (envs, experts, evaluation, data, training). It holds the cups and the cap with **the
   thumb and the index finger only**, as in your clips. With it, the scripted experts put both base cups down
   (8/8 and 8/8). The cap pinch and the thumbs-up are designed, and turning the top cup over is being finished.
-  Status, results and next steps: [docs/HANDOFF_FIVE_FINGER.md](HANDOFF_FIVE_FINGER.md). The Dex3 stays
-  the default.
+  The Dex3 stays the default.
 - **What your clips gave.** 32 clips: 13 of the base cups (most showing both A and B), 10 of the top cup, 9 of
   throws. MediaPipe found the hand in only part of the frames of some clips (the hand is seen from above, often
   at the image's edge), and every demo whose reconstruction looked wrong was left out, with the reason printed by
@@ -376,6 +375,44 @@ Two lessons from building this, both handled in the code:
 - **PPO on top of a good BC policy needs big batches and small steps.** With about 1k samples per update,
   success degraded as the BC term decayed. About 4k samples per update, a 5e-5 actor learning rate, KL early
   stopping and a BC-term floor made it improve steadily.
+
+## Setup notes and pitfalls
+
+**Downloaded on first use** (needs network and `git`): the G1, Shadow hand and Panda models from MuJoCo Menagerie
+into `third_party/` (set `MENAGERIE_DIR` to use an existing checkout instead), and the MediaPipe models into
+`~/.cache/robot_arm/` (hand 7.8 MB, pose about 30 MB). MediaPipe 1.2.0 has only the Tasks API (no `mp.solutions`).
+
+**The 3rd video set** lives on the `dataset-2-videos` branch (about 1 GB, with a `MANIFEST.json` of each file's size
+and SHA-256): `git fetch origin dataset-2-videos && git worktree add ../dataset_2 dataset-2-videos`.
+
+**Smoke test** before longer runs: `pytest -q`, then the hand-written expert on each cup with
+`G1_HAND=shadow python scripts/g1_evaluate.py --task place --stage 0 --episodes 16` (and `--stage 1`, `--stage 2`).
+A different MuJoCo or Menagerie version changes contacts, and with them these numbers.
+
+Rendering is only needed for videos: `MUJOCO_GL=cgl` on a Mac, `egl` or `osmesa` on Linux.
+
+Pitfalls:
+
+- **Set `G1_HAND=shadow` in the shell that launches Python.** Worker processes inherit it, and checkpoints don't store
+  the hand: forgetting it silently runs the Dex3 with Shadow checkpoints.
+- **`scripts/upload_videos.py` overwrites its branch.** It force-pushes its first batch to the branch you name; the
+  default, `videos-upload`, holds the 1st set. Always pass a new `--branch`.
+- **MediaPipe's pose left/right labels are swapped in the overhead view.** Choose the working arm by its wrist's
+  distance to the working hand.
+- **Whole-sequence `success_rate` is 0% until the throw works.** Use `reached_stage` (stage 3 = pyramid built).
+- **Check each cup.** A run that "succeeds" on the `place` task with random stages can hide a weak cup: evaluate stages
+  0, 1 and 2 and the whole sequence.
+- **Evaluation noise.** 24–32 tries per cell is about ±8 points. Use the same seeds for every policy.
+- **Memory.** On a 16 GB Mac, each worker that renders videos (`TRY_VIDEOS` set) wires about 0.75 GB of GPU memory
+  plus 0.4 GB of RAM: keep the total at 6 workers or fewer. Bulk data generation is faster without `TRY_VIDEOS`.
+- **`read_video` holds all frames in memory.** A 1080×1920 clip at 60 fps is several GB at full resolution; keep
+  `--max-width` at 720 or 960.
+- **Cup, cap and marker sizes are assumptions** (cup 12 cm tall, 9 cm across the mouth, 5 cm across the bottom; cap
+  2.8 cm; markers 5 cm). A mouth-down cup's width against the marker scale gives its mouth diameter: check it once.
+- **The camera moves slightly between clips** (up to about 25 px at the markers). Calibrate every clip from its own
+  markers.
+- **Training device.** `train_diffusion.py` uses the Apple GPU (`mps`) by default; `train_bc.py` needs `--device mps`.
+  The 4.7M-parameter U-Net takes about 0.1 s per step at batch 256.
 
 ## Repository layout
 

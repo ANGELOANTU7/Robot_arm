@@ -2,9 +2,8 @@
 
 A running guide to the code, built part by part. Read order: 1 task, 2 control, 3 learning, 4 training data, 5 video.
 
-Correction to `THROW_RL_HANDOVER.md`: stages are 0–2 cups, 3 throw, 4 thumbs-up, so reaching stage 3 means the pyramid
-is built. `chunk_2k` built it 32/32 times in whole sequences; the 19/32 figure counts throws, not pyramids. On 96
-sequences it built 85 (89%); see "Final evaluation" in `HANDOVER_DATASET2.md`.
+Stages are 0–2 cups, 3 throw, 4 thumbs-up, so reaching stage 3 means the pyramid is built. `chunk_2k` built it 32/32
+times in whole sequences; on 96 sequences it built 85 (89%).
 
 ## Part 1: the task (`humanoid/config.py`, `scene.py`, `objects.py`, `envs.py`)
 
