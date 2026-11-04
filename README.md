@@ -47,6 +47,8 @@ not yet completed the whole task. Nothing has been run on a real robot yet.
 - **Two hands:** the Dex3 (3 fingers) and the Shadow hand (5 fingers), switched with `G1_HAND`.
 - **Real-world hardware limits mode** (`G1_REAL=1`): torque and speed limits, gravity, motor heat, balance on the
   robot's own feet, hand weight, delays, camera and encoder noise, and per-try randomisation.
+- **Interactive GUI** (`scripts/g1_gui.py`): pick a controller per task, arrange the table, set the real-world
+  limits and watch the robot live from any angle, in the browser.
 - **Evaluation and videos:** success rates on unseen layouts, a video of every try (`TRY_VIDEOS`), and a live
   browser view of many tries at once.
 - **Tests** against synthetic ground truth.
@@ -131,7 +133,8 @@ Robot_arm/
 │   ├── ppo.py, policy.py       PPO fine-tuning; actor-critic network
 │   ├── tasks.py                task registry used by training and evaluation
 │   └── *.py (others)           the Panda ball-in-cup proof of concept
-├── scripts/                    command-line entry points (g1_* for the humanoid, train_* for training)
+├── scripts/                    command-line entry points (g1_* for the humanoid, train_* for training);
+│                               g1_gui.py + g1_gui.html is the interactive GUI
 ├── tests/                      unit and end-to-end tests
 ├── docs/                       write-ups, recording guides, marker sheet, GIFs and diagrams
 ├── sim_videos/                 videos of the robot's tries, failures included
@@ -179,6 +182,24 @@ for the 5-finger hand and `G1_REAL=1` for real-world limits.
 
 ### With Python
 
+**Interactive GUI.** Opens in your browser:
+
+```bash
+python scripts/g1_gui.py
+```
+
+1. **Controllers:** for each task (cup A, cup B, top cup, throw) pick a controller. The best learned one is selected
+   and marked, and each shows its success rate.
+2. **Table layout:** a top view of the table. Drag the three cups, the cap and the pyramid spot where you want them;
+   the area the robot can reach is shaded, and the page warns about layouts it can't manage.
+3. **Real-world limits:** keep the perfect simulator, or turn the limits on and adjust them (camera errors, delays,
+   pushes, what varies between tries). Each setting has its own trained controllers, which are picked for you.
+4. **Run:** the robot works live. Drag the view to orbit, Shift+drag to pan and scroll to zoom, or switch to the
+   front, side, top, head or wrist camera. A panel shows each task as it finishes and the result.
+
+The trained controllers are read from `runs/`. If a checkpoint isn't there, that option is greyed out and the
+hand-written controller is used instead.
+
 **Run the robot in simulation** with the hand-written experts (no training needed):
 
 ```bash
@@ -216,6 +237,16 @@ All commands and options are in [docs/README_FULL.md](docs/README_FULL.md).
 
 ### With Docker
 
+**Interactive GUI.** Start it, then open <http://localhost:8766> in your browser. It's the same four steps as in
+the Python section:
+
+```bash
+docker run --rm -p 8766:8766 -v "$PWD/runs:/app/runs" robot_arm \
+    python scripts/g1_gui.py --host 0.0.0.0 --no-browser
+```
+
+The `-v` option gives the container your trained controllers from `runs/`.
+
 **Run the robot in simulation** (videos are saved to `runs/` on your machine through the `-v` mount):
 
 ```bash
@@ -227,7 +258,7 @@ docker run --rm -e G1_HAND=shadow -e G1_REAL=1 robot_arm \
     python scripts/g1_evaluate.py --task full --episodes 20                       # with real-world limits
 ```
 
-The live viewer (`g1_view.py`) needs a display, so it isn't available in the container; save videos instead.
+The desktop viewer (`g1_view.py`) needs a display, so it isn't available in the container; use the GUI above.
 
 **The whole pipeline from your own videos:** open a shell in the container with your clips, data and models
 mounted, then run steps 2–5 from the Python section above unchanged:

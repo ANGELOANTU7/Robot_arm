@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G1 Cup Pyramid</title>
+<style>
+  :root {
+    --bg: #111317; --panel: #1a1d23; --line: #2c313a; --text: #e8eaed; --muted: #9aa0a6;
+    --accent: #4f8cff; --good: #3ecf8e; --warn: #f5b942; --bad: #ff6b6b; --cup: #e0393e; --cap: #3d8bff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display: flex; align-items: center; gap: 24px; padding: 14px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 6px 14px; cursor: pointer; font: inherit; }
+  nav button.on { border-color: var(--accent); color: var(--text); background: #1f2a3f; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  section { display: none; } section.on { display: block; }
+  h2 { font-size: 20px; margin: 0 0 6px; } p.lead { color: var(--muted); margin: 0 0 20px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+  @media (max-width: 900px) { .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h3 { margin: 0 0 12px; font-size: 16px; }
+  .opt { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+  .opt:hover { background: #20242c; } .opt.sel { border-color: var(--accent); background: #1f2a3f; }
+  .opt.off { opacity: .45; cursor: not-allowed; }
+  .opt input { margin-top: 3px; } .opt .name { font-weight: 500; } .opt .meta { color: var(--muted); font-size: 12px; }
+  .best { color: var(--good); font-size: 11px; font-weight: 600; margin-left: 4px; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .actions { display: flex; justify-content: space-between; margin-top: 24px; gap: 12px; }
+  button.btn { background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 9px 18px; font: inherit; font-weight: 500; cursor: pointer; }
+  button.ghost { background: none; border: 1px solid var(--line); color: var(--text); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  .note { color: var(--muted); font-size: 13px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; background: #20242c; border: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  canvas#table { width: 100%; height: auto; background: #0c0e12; border-radius: 10px; border: 1px solid var(--line); touch-action: none; cursor: grab; }
+  ul.warn { padding-left: 18px; margin: 8px 0 0; color: var(--warn); } ul.warn.ok { color: var(--good); list-style: none; padding: 0; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; color: var(--muted); font-size: 13px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .switch { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; width: fit-content; }
+  .switch button { background: none; border: 0; color: var(--muted); padding: 10px 18px; font: inherit; cursor: pointer; }
+  .switch button.on { background: var(--accent); color: white; }
+  .slider { display: grid; grid-template-columns: 210px 1fr 80px; gap: 12px; align-items: center; padding: 6px 0; }
+  .slider input[type=range] { width: 100%; } .slider .v { text-align: right; font-variant-numeric: tabular-nums; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; } @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
+  ul.fixed { margin: 0; padding-left: 18px; color: var(--muted); }
+  .live { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; } @media (max-width: 1000px) { .live { grid-template-columns: 1fr; } }
+  .viewer { position: relative; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .viewer img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; cursor: grab; }
+  .viewer .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
+  .cams { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+  .cams button { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; }
+  .cams button.on { border-color: var(--accent); background: #1f2a3f; }
+  ol.stages { list-style: none; padding: 0; margin: 0; }
+  ol.stages li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  ol.stages li .c { color: var(--muted); font-size: 12px; } ol.stages li.now { color: var(--accent); } ol.stages li.done .mk { color: var(--good); }
+  .outcome { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: #20242c; }
+  .outcome.good { color: var(--good); } .outcome.bad { color: var(--bad); }
+  select, input[type=number] { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <h1>G1 Cup Pyramid</h1>
+  <nav id="nav">
+    <button data-step="0" class="on">1. Controllers</button>
+    <button data-step="1">2. Table layout</button>
+    <button data-step="2">3. Real-world limits</button>
+    <button data-step="3">4. Run</button>
+  </nav>
+</header>
+<main>
+  <section id="s0" class="on">
+    <h2>Choose a controller for each task</h2>
+    <p class="lead">The best learned controller for each task is picked by default. The percentage is its success rate on new layouts.
+      <span class="pill" id="modeNote"></span></p>
+    <div class="grid4" id="ctl"></div>
+    <div class="actions"><span></span><button class="btn" onclick="go(1)">Next: table layout</button></div>
+  </section>
+
+  <section id="s1">
+    <h2>Arrange the table</h2>
+    <p class="lead">Top view, robot at the bottom. Drag the cups, the cap and the pyramid spot. The robot can reach the green area.</p>
+    <div class="layout">
+      <canvas id="table" width="760" height="620"></canvas>
+      <div>
+        <div class="card">
+          <div class="legend">
+            <span><i class="dot" style="background:var(--cup)"></i>Cups A, B, top</span>
+            <span><i class="dot" style="background:var(--cap)"></i>Cap</span>
+            <span><i class="dot" style="border:2px dashed #ddd"></i>Pyramid spot</span>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn ghost" onclick="defaultLayout()">Default layout</button>
+            <button class="btn ghost" onclick="randomLayout()">Random layout</button>
+          </div>
+          <ul class="warn" id="warn"></ul>
+          <p class="note" style="margin-top:12px">Each position may shift by up to 1.5 cm when the try starts, as in training.</p>
+        </div>
+      </div>
+    </div>
+    <div class="actions"><button class="btn ghost" onclick="go(0)">Back</button><button class="btn" onclick="go(2)">Next: real-world limits</button></div>
+  </section>
+
+  <section id="s2">
+    <h2>Real-world limits</h2>
+    <p class="lead">Simulate the limits of real hardware, or keep the perfect simulator. Each comes with its own trained controllers.</p>
+    <div class="switch" id="realSwitch">
+      <button data-on="0" class="on">Perfect simulator</button>
+      <button data-on="1">Real-world limits</button>
+    </div>
+    <p class="note" id="switchNote" style="margin:10px 0 0"></p>
+    <div id="realBox" style="display:none; margin-top:18px">
+      <div class="two">
+        <div class="card">
+          <h3>Always on with real limits</h3>
+          <ul class="fixed" id="fixed"></ul>
+          <h3 style="margin-top:18px">Changes from try to try</h3>
+          <div id="groups"></div>
+        </div>
+        <div class="card">
+          <h3>Sensing, delays and pushes</h3>
+          <div id="sliders"></div>
+          <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="resetReal()">Reset to defaults</button><button class="btn ghost" onclick="zeroReal()">Turn all off</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <div class="row">
+        <label>Speed <select id="speed"><option value="1">1x (real time)</option><option value="2">2x</option><option value="4">4x</option></select></label>
+        <label>Random seed <input type="number" id="seed" value="2" style="width:110px"></label>
+        <span class="note">The seed sets everything random in the try (small position shifts and, with real limits, the per-try changes).</span>
+      </div>
+    </div>
+    <div class="actions"><button class="btn ghost" onclick="go(1)">Back</button><button class="btn" onclick="run()">Run</button></div>
+  </section>
+
+  <section id="s3">
+    <div class="live">
+      <div>
+        <div class="viewer"><img id="view" alt="Live view of the robot" draggable="false"><div class="wait" id="wait">Starting the simulator…</div></div>
+        <div class="cams" id="cams">
+          <button data-cam="free" class="on">Free (drag me)</button><button data-cam="front">Front</button><button data-cam="side">Side</button>
+          <button data-cam="over">Top</button><button data-cam="head">Robot's head</button><button data-cam="wrist">Wrist</button>
+        </div>
+        <p class="note">Drag to orbit, Shift+drag or right-drag to pan, scroll to zoom. The view can be moved while the robot works and after it finishes.</p>
+      </div>
+      <div class="card">
+        <h3>Progress</h3>
+        <div class="note" id="modeLive"></div>
+        <ol class="stages" id="stages"></ol>
+        <div class="outcome" id="outcome" style="display:none"></div>
+        <div class="row" style="margin-top:16px">
+          <button class="btn ghost" onclick="stop()">Stop</button>
+          <button class="btn" onclick="run()">Run again</button>
+          <button class="btn ghost" onclick="go(0)">Change setup</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+let CFG, mode = "perfect", choice = [], layout = null, realOn = false, realValues = {}, realGroups = new Set();
+const $ = id => document.getElementById(id);
+const post = (url, body) => fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+
+function go(step) {
+  document.querySelectorAll("section").forEach((s, i) => s.classList.toggle("on", i === step));
+  document.querySelectorAll("#nav button").forEach((b, i) => b.classList.toggle("on", i === step));
+  if (step === 1) draw();
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll("#nav button").forEach(b => b.onclick = () => +b.dataset.step === 3 ? run() : go(+b.dataset.step));
+
+// ---- 1. controllers ----
+function options(task) { const c = CFG.controllers[mode]; return task === 3 ? c.throw : c.cups; }
+function score(o, task) { return task === 3 ? o.score : o.scores[task]; }
+function renderControllers() {
+  $("modeNote").textContent = mode === "real" ? "Trained with real-world limits (change in step 3)" : "Trained in the perfect simulator (change in step 3)";
+  $("ctl").innerHTML = CFG.tasks.map((name, t) => `<div class="card"><h3>${name}</h3>${options(t).map(o => {
+    const best = CFG.controllers[mode].best[t] === o.id, sel = choice[t] === o.id;
+    return `<label class="opt ${sel ? "sel" : ""} ${o.available ? "" : "off"}"><input type="radio" name="c${t}" value="${o.id}" ${sel ? "checked" : ""} ${o.available ? "" : "disabled"} onchange="choice[${t}]='${o.id}';renderControllers()">
+      <span><span class="name">${o.label}</span>${best ? '<span class="best">best</span>' : ""}<br><span class="meta">${score(o, t)}% success${o.available ? "" : " · checkpoint not in runs/"}</span></span></label>`;
+  }).join("")}</div>`).join("");
+}
+function bestChoices() {
+  choice = CFG.controllers[mode].best.map((id, t) => {
+    const o = options(t).find(o => o.id === id);
+    return o && o.available ? id : "scripted";
+  });
+}
+
+// ---- 2. table layout ----
+const cv = $("table"), ctx = cv.getContext("2d");
+const VIEW = {x0: -0.06, x1: 0.72, y0: 0.36, y1: -0.56};  // world x up the screen, y to the left
+const sx = y => (VIEW.y0 - y) / (VIEW.y0 - VIEW.y1) * cv.width, sy = x => (VIEW.x1 - x) / (VIEW.x1 - VIEW.x0) * cv.height;
+const wy = px => VIEW.y0 - px / cv.width * (VIEW.y0 - VIEW.y1), wx = py => VIEW.x1 - py / cv.height * (VIEW.x1 - VIEW.x0);
+const m2px = m => m / (VIEW.x1 - VIEW.x0) * cv.height;
+const G = () => CFG.geometry[realOn ? "real" : "perfect"];
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+function pyramid(c) {
+  const g = G(), s = 2 * g.cup_radius + g.base_gap, u = [Math.cos(g.pyramid_yaw), Math.sin(g.pyramid_yaw)];
+  return {a: [c[0] - u[0] * s / 2, c[1] - u[1] * s / 2], b: [c[0] + u[0] * s / 2, c[1] + u[1] * s / 2]};
+}
+function inReach(p) {
+  const g = G(), [x0, x1, y0, y1] = g.reach_box, r = dist(p, g.reach_center);
+  const b = Math.atan2(p[1] - g.reach_center[1], p[0] - g.reach_center[0]);
+  return p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1 && r >= g.reach_radius[0] && r <= g.reach_radius[1] && b >= g.reach_bearing[0] && b <= g.reach_bearing[1];
+}
+function defaultLayout() {
+  const L = CFG.layout;
+  layout = {supply: L.supply.map(p => [...p]), cap: [...L.cap], pyramid: [...L.pyramid]};
+  draw();
+}
+function problems(L) {
+  const g = G(), out = [], names = ["Cup A", "Cup B", "Top cup"];
+  L.supply.forEach((p, i) => {
+    if (!inReach(p)) out.push(`${names[i]} is outside the robot's reach`);
+    if (dist(p, L.pyramid) < g.pyramid_clearance) out.push(`${names[i]} is too close to the pyramid spot`);
+    L.supply.slice(0, i).forEach((q, j) => { if (dist(p, q) < g.cup_clearance) out.push(`${names[j]} and ${names[i]} are too close together`); });
+    if (dist(L.cap, p) < g.cup_radius + 0.06) out.push(`The cap is too close to ${names[i]}`);
+  });
+  if (L.cap[0] > g.cap_max_x) out.push("The cap is too far from the robot");
+  if (dist(L.cap, L.pyramid) < g.pyramid_clearance + 0.04) out.push("The cap is too close to the pyramid spot");
+  const t = g.table_center, h = g.table_half, P = pyramid(L.pyramid);
+  [P.a, P.b].forEach(p => { if (Math.abs(p[0] - t[0]) > h[0] - g.cup_radius || Math.abs(p[1] - t[1]) > h[1] - g.cup_radius) out.push("The pyramid spot is off the table"); });
+  return [...new Set(out)];
+}
+function randomLayout() {
+  const g = G();
+  const spot = () => { for (let k = 0; k < 200; k++) { const p = [g.table_center[0] + (Math.random() * 2 - 1) * g.table_half[0], g.table_center[1] + (Math.random() * 2 - 1) * g.table_half[1]]; if (inReach(p)) return p; } return [...g.supply_cups[0]]; };
+  for (let k = 0; k < 3000; k++) {
+    const L = {supply: [spot(), spot(), spot()], cap: [g.cap_spot[0] + (Math.random() - .5) * .06, g.cap_spot[1] + (Math.random() - .5) * .06], pyramid: [...CFG.layout.pyramid]};
+    if (!problems(L).length) { layout = L; draw(); return; }
+  }
+  defaultLayout();
+}
+let reachImg = null, reachFor = null;
+function reachLayer() {
+  if (reachImg && reachFor === realOn) return reachImg;
+  const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height;
+  const x = c.getContext("2d"), img = x.createImageData(c.width, c.height);
+  for (let py = 0; py < c.height; py += 2) for (let px = 0; px < c.width; px += 2) {
+    if (!inReach([wx(py), wy(px)])) continue;
+    for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { const i = ((py + dy) * c.width + px + dx) * 4; img.data.set([62, 207, 142, 38], i); }
+  }
+  x.putImageData(img, 0, 0); reachImg = c; reachFor = realOn; return c;
+}
+function circle(p, r, fill, stroke, dash) {
+  ctx.beginPath(); ctx.arc(sx(p[1]), sy(p[0]), m2px(r), 0, 2 * Math.PI);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.setLineDash(dash || []); ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]); }
+}
+function label(p, text, dy = 0) { ctx.fillStyle = "#fff"; ctx.font = "600 13px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, sx(p[1]), sy(p[0]) + dy); }
+function draw() {
+  if (!layout) return;
+  const g = G(), t = g.table_center, h = g.table_half;
+  ctx.fillStyle = "#0c0e12"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = "#6b4a2f"; ctx.fillRect(sx(t[1] + h[1]), sy(t[0] + h[0]), m2px(2 * h[1]), m2px(2 * h[0]));
+  ctx.drawImage(reachLayer(), 0, 0);
+  ctx.fillStyle = "#c9ccd1"; ctx.beginPath(); ctx.ellipse(sx(0), sy(0), m2px(0.17), m2px(0.09), 0, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = "#111"; ctx.font = "600 13px system-ui"; ctx.textAlign = "center"; ctx.fillText("ROBOT", sx(0), sy(0) + 4);
+  const P = pyramid(layout.pyramid);
+  circle(P.a, g.cup_radius, null, "#ddd", [6, 5]); circle(P.b, g.cup_radius, null, "#ddd", [6, 5]);
+  label(layout.pyramid, "pyramid", -m2px(g.cup_radius) - 12);
+  ["A", "B", "Top"].forEach((n, i) => { circle(layout.supply[i], g.cup_radius, "#e0393e", "#ffb3b5"); label(layout.supply[i], n); });
+  circle(layout.cap, g.cap_radius + 0.004, "#3d8bff", "#cfe0ff"); label(layout.cap, "cap", -18);
+  const w = problems(layout);
+  $("warn").className = w.length ? "warn" : "warn ok";
+  $("warn").innerHTML = w.length ? w.map(s => `<li>${s}</li>`).join("") + '<li style="list-style:none;margin-left:-18px;color:var(--muted)">You can still run it; the robot may fail.</li>' : "<li>✓ Layout looks reachable</li>";
+}
+let drag = null;
+function pick(e) {
+  const r = cv.getBoundingClientRect(), px = (e.clientX - r.left) * cv.width / r.width, py = (e.clientY - r.top) * cv.height / r.height;
+  return [wx(py), wy(px)];
+}
+cv.addEventListener("pointerdown", e => {
+  const p = pick(e), g = G();
+  const items = [["cap", null, layout.cap, g.cap_radius + 0.02], ...layout.supply.map((c, i) => ["cup", i, c, g.cup_radius]), ["pyramid", null, layout.pyramid, g.cup_radius * 2]];
+  const hit = items.find(([, , c, r]) => dist(p, c) <= r);
+  if (hit) { drag = hit; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; }
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const p = pick(e);
+  if (drag[0] === "cup") layout.supply[drag[1]] = p; else layout[drag[0]] = p;
+  draw();
+});
+cv.addEventListener("pointerup", () => { drag = null; cv.style.cursor = "grab"; });
+
+// ---- 3. real-world limits ----
+function setMode(on) {
+  const changed = on !== realOn;
+  realOn = on; mode = on ? "real" : "perfect";
+  document.querySelectorAll("#realSwitch button").forEach(b => b.classList.toggle("on", (+b.dataset.on === 1) === on));
+  $("realBox").style.display = on ? "block" : "none";
+  if (changed) {
+    bestChoices(); renderControllers(); reachImg = null;
+    const names = choice.map((c, t) => `${CFG.tasks[t]}: ${options(t).find(o => o.id === c).label}`).join(" · ");
+    $("switchNote").innerHTML = `Controllers switched to the ones trained ${on ? "with real-world limits" : "in the perfect simulator"}: ${names}. <a href="#" onclick="go(0);return false" style="color:var(--accent)">Change</a>`;
+  }
+}
+document.querySelectorAll("#realSwitch button").forEach(b => b.onclick = () => setMode(b.dataset.on === "1"));
+function renderReal() {
+  $("fixed").innerHTML = CFG.real.fixed.map(s => `<li>${s}</li>`).join("");
+  $("groups").innerHTML = CFG.real.groups.map(g => `<label class="opt" style="padding:6px 0"><input type="checkbox" ${realGroups.has(g.key) ? "checked" : ""} onchange="this.checked?realGroups.add('${g.key}'):realGroups.delete('${g.key}')"><span>${g.label}</span></label>`).join("");
+  $("sliders").innerHTML = CFG.real.settings.map(s => `<div class="slider"><span>${s.label}</span>
+    <input type="range" min="${s.min}" max="${s.max}" step="${s.step}" value="${realValues[s.key]}" oninput="realValues['${s.key}']=+this.value;this.parentNode.querySelector('.v').textContent=this.value+' ${s.unit}'">
+    <span class="v">${realValues[s.key]} ${s.unit}</span></div>`).join("");
+}
+function resetReal() { CFG.real.settings.forEach(s => realValues[s.key] = s.value); realGroups = new Set(CFG.real.groups.map(g => g.key)); renderReal(); }
+function zeroReal() { CFG.real.settings.forEach(s => realValues[s.key] = 0); realGroups = new Set(); renderReal(); }
+
+// ---- 4. run ----
+async function run() {
+  go(3);
+  $("wait").style.display = "grid"; $("wait").textContent = "Starting the simulator and loading the controllers…";
+  $("outcome").style.display = "none";
+  await post("/run", {controllers: choice, layout, seed: +$("seed").value, speed: +$("speed").value,
+    real: {on: realOn, groups: [...realGroups], values: realValues}});
+  $("view").src = "/stream?" + Date.now();
+}
+const stop = () => post("/stop");
+$("view").onload = () => { $("wait").style.display = "none"; };
+document.querySelectorAll("#cams button").forEach(b => b.onclick = () => post("/camera", {preset: b.dataset.cam}));
+let orbit = null;
+const img = $("view");
+img.addEventListener("contextmenu", e => e.preventDefault());
+img.addEventListener("pointerdown", e => { orbit = {x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2}; img.setPointerCapture(e.pointerId); });
+img.addEventListener("pointermove", e => {
+  if (!orbit) return;
+  const d = [e.clientX - orbit.x, e.clientY - orbit.y]; orbit.x = e.clientX; orbit.y = e.clientY;
+  post("/camera", orbit.pan ? {pan: d} : {orbit: d});
+});
+img.addEventListener("pointerup", () => orbit = null);
+img.addEventListener("wheel", e => { e.preventDefault(); post("/camera", {zoom: Math.sign(e.deltaY)}); }, {passive: false});
+async function poll() {
+  try {
+    const s = await (await fetch("/status")).json();
+    if (s.labels) {
+      $("modeLive").textContent = s.mode === "real" ? "Real-world limits on" : "Perfect simulator";
+      const names = [...CFG.tasks, "Thumbs-up"];
+      $("stages").innerHTML = names.map((n, i) => {
+        const reached = s.reached && s.reached[i] !== undefined, done = (s.stage > i) || (s.done && s.outcome && s.outcome.startsWith("Success"));
+        const now = s.stage === i && !s.done;
+        return `<li class="${done ? "done" : ""} ${now ? "now" : ""}"><span class="mk">${done ? "✓" : now ? "▶" : "·"}</span><span>${n}<br><span class="c">${i < 4 ? s.labels[i] : "throw controller"}</span></span><span class="c">${reached ? s.reached[i] + " s" : ""}</span></li>`;
+      }).join("");
+      document.querySelectorAll("#cams button").forEach(b => b.classList.toggle("on", b.dataset.cam === s.camera));
+      if (s.done && s.outcome) {
+        $("outcome").style.display = "block"; $("outcome").textContent = s.outcome + ` (${s.time} s)`;
+        $("outcome").className = "outcome " + (s.outcome.startsWith("Success") ? "good" : "bad");
+      } else $("outcome").style.display = "none";
+      if (!s.running && !s.starting) $("wait").textContent = "Stopped";
+    }
+  } catch (e) {}
+  setTimeout(poll, 400);
+}
+
+fetch("/config").then(r => r.json()).then(c => {
+  CFG = c; bestChoices(); renderControllers(); resetReal(); defaultLayout(); poll();
+});
+</script>
+</body>
+</html>
