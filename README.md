@@ -181,9 +181,15 @@ cd Robot_arm
 docker build -t robot_arm .                                                    # CPU-only PyTorch
 docker build --build-arg TORCH_INDEX=https://pypi.org/simple -t robot_arm:gpu .   # or: CUDA PyTorch, for an NVIDIA GPU
 docker run --rm robot_arm pytest                                               # check the image
+
+# Download the trained controllers into runs/ and the videos into data/videos/, in this folder on your machine
+docker run --rm -v "$PWD/runs:/app/runs" -v "$PWD/data:/app/data" robot_arm \
+    python scripts/download_models.py --videos          # leave out --videos for only the controllers (66 MB)
 ```
 
 The GPU image needs the NVIDIA Container Toolkit. The robot models are downloaded into the image while it builds.
+The download saves to `runs/` and `data/` in your clone, so they stay after the container exits; every command in
+[How to run](#with-docker) mounts these two folders with the same `-v` options so the container finds them.
 
 ## How to run
 
@@ -252,32 +258,32 @@ All commands and options are in [docs/README_FULL.md](docs/README_FULL.md).
 the Python section:
 
 ```bash
-docker run --rm -p 8766:8766 -v robot_arm_runs:/app/runs robot_arm \
+docker run --rm -p 8766:8766 -v "$PWD/runs:/app/runs" robot_arm \
     python scripts/g1_gui.py --host 0.0.0.0 --no-browser
 ```
 
-The first start downloads the controllers from Hugging Face (66 MB). `-v robot_arm_runs:/app/runs` keeps them in a
-Docker volume, so later starts reuse them. To use controllers you trained yourself instead, mount your folder:
-`-v "$PWD/runs:/app/runs"`.
+`-v "$PWD/runs:/app/runs"` mounts the controllers you downloaded during installation. If you skipped that step, the
+GUI downloads them into the same folder when it starts.
 
-**Run the robot in simulation** (videos are saved to `runs/` on your machine through the `-v` mount). To score the
-trained controllers, download them into the same volume first:
-`docker run --rm -v robot_arm_runs:/app/runs robot_arm python scripts/download_models.py`, then add
-`-v robot_arm_runs:/app/runs` and a `--policy` to the commands below.
+**Run the robot in simulation**, with the downloaded controllers mounted the same way (videos are saved to
+`runs/videos/` on your machine):
 
 ```bash
-docker run --rm -e G1_HAND=shadow robot_arm \
-    python scripts/g1_evaluate.py --task full --episodes 20                       # success rate on new layouts
 docker run --rm -e G1_HAND=shadow -v "$PWD/runs:/app/runs" robot_arm \
-    python scripts/g1_evaluate.py --task full --episodes 4 --videos runs/videos   # save mp4s
-docker run --rm -e G1_HAND=shadow -e G1_REAL=1 robot_arm \
-    python scripts/g1_evaluate.py --task full --episodes 20                       # with real-world limits
+    python scripts/g1_evaluate.py --task full --episodes 20 \
+    --policy place=runs/chunk_6k_elbow/policy.pt,toss=runs/toss4k_dp_elbow/policy.pt   # best learned controllers
+docker run --rm -e G1_HAND=shadow -v "$PWD/runs:/app/runs" robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 4 --videos runs/videos       # save mp4s (hand-written)
+docker run --rm -e G1_HAND=shadow -e G1_REAL=1 -v "$PWD/runs:/app/runs" robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 20 \
+    --policy place=runs/real_place_chunk/policy.pt,toss=runs/real2_toss_dp/policy.pt   # with real-world limits
 ```
 
 The desktop viewer (`g1_view.py`) needs a display, so it isn't available in the container; use the GUI above.
 
 **The whole pipeline from your own videos:** open a shell in the container with your clips, data and models
-mounted, then run steps 2–5 from the Python section above unchanged:
+mounted, then run steps 2–5 from the Python section above unchanged. The videos downloaded during installation are
+in `data/videos/` inside the container:
 
 ```bash
 docker run --rm -it -e G1_HAND=shadow \
