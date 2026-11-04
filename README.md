@@ -43,7 +43,7 @@ not yet completed the whole task. Nothing has been run on a real robot yet.
 - **Dataset generation:** many layouts in parallel, task mix, noise injection (DART) for recovery examples,
   only successful stages kept, and DAgger for extra data.
 - **Several learned controllers:** behavior cloning, a chunked MLP, a diffusion policy and PPO fine-tuning;
-  a vision-language-action model (SmolVLA + RL) in progress.
+  a vision-language-action model (SmolVLA, with and without RL) tested with real-world limits.
 - **Two hands:** the Dex3 (3 fingers) and the Shadow hand (5 fingers), switched with `G1_HAND`.
 - **Real-world hardware limits mode** (`G1_REAL=1`): torque and speed limits, gravity, motor heat, balance on the
   robot's own feet, hand weight, delays, camera and encoder noise, and per-try randomisation.
@@ -105,8 +105,9 @@ video with the tracking drawn on it. Right: the robot doing the same movement.
   chunk), which can choose one clean way out when several are possible. It is used as is, without the RL step.
 - **RL (PPO).** Starts from the imitation policy and improves it by trial and error in many simulators at once,
   with a fading term that keeps it close to the demos so it doesn't forget them early on.
-- **In progress: VLA.** A vision-language-action model (SmolVLA) that sees the robot's cameras and a spoken
-  instruction per stage, with PPO adding a small correction on top.
+- **VLA.** A vision-language-action model (SmolVLA) that sees the robot's cameras and a spoken instruction per
+  stage, with PPO adding a small correction on top. Tested with real-world limits only; see
+  [Results](#5-learned-controllers-compared-per-task).
 
 ## Repository structure
 
@@ -125,7 +126,7 @@ Robot_arm/
 │   │   ├── dataset.py              dataset generation (task mix, noise, DAgger)
 │   │   ├── real.py                 real-world hardware limits (G1_REAL=1)
 │   │   ├── evaluate.py, trylog.py  evaluation and per-try videos
-│   │   └── vla.py, vla_model.py    vision-language-action model (in progress)
+│   │   └── vla.py, vla_model.py    vision-language-action model (SmolVLA)
 │   ├── bc.py, diffusion.py     behavior cloning; chunked MLP and diffusion policy
 │   ├── ppo.py, policy.py       PPO fine-tuning; actor-critic network
 │   ├── tasks.py                task registry used by training and evaluation
@@ -366,6 +367,8 @@ Two tables: one in the default (perfect) simulator, one with real-world limits o
 - **Imitation**: copies the robot demos made from my videos (a chunked MLP for the cups, BC for the throw).
 - **RL (PPO)**: the imitation policy improved by trial and error.
 - **Diffusion**: a diffusion policy.
+- **VLA**: a vision-language-action model (SmolVLA) that sees the robot's head and wrist cameras and gets a spoken
+  instruction per stage; trained only with real-world limits.
 
 Each row uses the same layout for every controller. The percentage under each GIF is its success rate over 48
 tries (cups) or 96 tries (throw); the best in each row is in bold. The GIF shows one try, so it can succeed where
@@ -393,17 +396,20 @@ imitation, and diffusion is best.
 - **When it was tried with real-world limits, it didn't help.** See table b): RL scored 100%, 52% and 35% on the
   cups against imitation's 98%, 69% and 38%.
 
+**Why there is no VLA here:** it was trained directly for the robot with real-world limits (its demos were made
+there), since the point was to see whether a camera-based controller could cope with a realistic robot.
+
 #### b) With real-world limits
 
 Filmed from the front, so you can see whether the top cup sits in the middle. The success check accepts a top
 cup up to 3 cm off-centre, so the top-cup row uses a layout where every success is centred (within 1 cm).
 
-| Task | Imitation | RL (PPO) | Diffusion |
-|---|---|---|---|
-| **Cup A** | ![](docs/gifs/cmp_c0_imit.gif)<br/>98% | ![](docs/gifs/cmp_c0_rl.gif)<br/>**100%** | not trained: see below |
-| **Cup B** | ![](docs/gifs/cmp_c1_imit.gif)<br/>**69%** | ![](docs/gifs/cmp_c1_rl.gif)<br/>52% | not trained: see below |
-| **Top cup** (turn over + place) | ![](docs/gifs/cmp_c2_imit.gif)<br/>**38%** | ![](docs/gifs/cmp_c2_rl.gif)<br/>35% | not trained: see below |
-| **Throw** | ![](docs/gifs/cmp_t_bc.gif)<br/>5% | ![](docs/gifs/cmp_t_rl.gif)<br/>7% | ![](docs/gifs/cmp_t_dp.gif)<br/>**9%** |
+| Task | Imitation | RL (PPO) | Diffusion | VLA |
+|---|---|---|---|---|
+| **Cup A** | ![](docs/gifs/cmp_c0_imit.gif)<br/>98% | ![](docs/gifs/cmp_c0_rl.gif)<br/>**100%** | not trained: see below | ![](docs/gifs/cmp_c0_vla.gif)<br/>69% |
+| **Cup B** | ![](docs/gifs/cmp_c1_imit.gif)<br/>**69%** | ![](docs/gifs/cmp_c1_rl.gif)<br/>52% | not trained: see below | ![](docs/gifs/cmp_c1_vla.gif)<br/>25% |
+| **Top cup** (turn over + place) | ![](docs/gifs/cmp_c2_imit.gif)<br/>**38%** | ![](docs/gifs/cmp_c2_rl.gif)<br/>35% | not trained: see below | ![](docs/gifs/cmp_c2_vla.gif)<br/>19% |
+| **Throw** | ![](docs/gifs/cmp_t_bc.gif)<br/>5% | ![](docs/gifs/cmp_t_rl.gif)<br/>7% | ![](docs/gifs/cmp_t_dp.gif)<br/>**9%** | ![](docs/gifs/cmp_t_vla.gif)<br/>6% |
 
 With real limits, RL is best on cup A, imitation on cup B and the top cup, and diffusion on the throw. With 48
 tries per cup task, gaps smaller than about 15–20 points could be chance; the largest is cup B (69% vs 52%).
@@ -412,6 +418,15 @@ tries per cup task, gaps smaller than about 15–20 points could be chance; the 
 worse than imitation: cup B 85% against 100%, and the top cup 44% against 79%. So the chunked MLP was kept for
 the cups and diffusion only for the throw, where it was best, and only those two were retrained with real-world
 limits.
+
+**The VLA is behind the other learned controllers on every cup task, and level with them on the throw (6% against
+5–9%, too close to separate).** It has to judge where the cups are from its
+camera images, which is less precise than the position estimate the others get: on cup B it knocked cup A over in
+28 of 48 tries. The first version, which had to work from the images alone, did worse still (cup A 33%, cup B 8%,
+top cup 12.5%, throw 0%); giving it the same position estimate as the others brought it to the numbers above.
+Adding RL on top (a small correction to its moves, trained with PPO) did not help: on cup B the best version
+placed 19% against 23% for the VLA alone in the same test, and on the throw it almost never succeeded, so RL had
+nothing to learn from. None of the controllers, VLA included, has completed the whole task with real limits.
 
 ### What this means
 
