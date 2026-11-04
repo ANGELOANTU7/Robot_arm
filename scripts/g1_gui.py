@@ -7,7 +7,8 @@ choose the real-world limits, then watch the robot live and move the camera arou
 The page is scripts/g1_gui.html. Each run is one simulator process, started with the hand (Shadow) and the
 real-world limits (G1_REAL, G1_REAL_SET) chosen on the page, since both are read when the simulator is imported.
 It streams JPEG frames back, rendered from the camera the page asks for. Trained controllers are loaded from
-runs/; a controller whose checkpoint isn't there is shown but can't be picked.
+runs/. Missing ones are downloaded from Hugging Face when the GUI starts (scripts/download_models.py); a controller
+that is still missing (no network, or --no-download) is shown but can't be picked.
 """
 
 import argparse
@@ -392,8 +393,19 @@ def main():
     p.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to reach it from outside a container")
     p.add_argument("--port", type=int, default=8766)
     p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--no-download", action="store_true", help="don't fetch missing controllers from Hugging Face")
     args = p.parse_args()
     os.chdir(ROOT)
+    missing = [spec for c in CONTROLLERS.values() for group in ("cups", "throw") for _, _, spec, _ in c[group]
+               if not available(spec)]
+    if missing and not args.no_download:
+        from download_models import download_controllers
+
+        print(f"Downloading {len(missing)} controllers from Hugging Face into runs/ ...")
+        try:
+            download_controllers(missing)
+        except Exception as e:  # offline: carry on with what is there
+            print(f"Download failed ({e}); missing controllers will be greyed out.")
     CONFIG = page_config()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://localhost:{args.port}"

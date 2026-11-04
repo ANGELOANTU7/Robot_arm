@@ -25,3 +25,6 @@ scratch/
 # Local virtual environments and tracked landmark caches
 .venv*/
 data/landmarks/
+
+# On Hugging Face (scripts/download_models.py --videos)
+sim_videos/

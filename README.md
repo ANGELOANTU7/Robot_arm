@@ -137,15 +137,25 @@ Robot_arm/
 │                               g1_gui.py + g1_gui.html is the interactive GUI
 ├── tests/                      unit and end-to-end tests
 ├── docs/                       write-ups, recording guides, marker sheet, GIFs and diagrams
-├── sim_videos/                 videos of the robot's tries, failures included
-├── data/                       (not in git) videos, tracked landmarks, generated datasets
-├── runs/                       (not in git) trained checkpoints
+├── data/                       (not in git) videos, tracked landmarks, generated datasets; the videos are on
+│                               Hugging Face (scripts/download_models.py --videos)
+├── runs/                       (not in git) trained checkpoints; download them with scripts/download_models.py
 ├── third_party/                (not in git) robot models, downloaded from MuJoCo Menagerie on first use
 ├── Dockerfile
 └── pyproject.toml
 ```
 
 ## Installation
+
+The trained controllers and the videos are kept outside this repository, on Hugging Face:
+
+- **Controllers:** [angeloantu/robot-arm-g1-weights](https://huggingface.co/angeloantu/robot-arm-g1-weights)
+  (the ten controllers from the results tables, 66 MB, plus the VLA, 1.2 GB)
+- **Videos:** [angeloantu/robot-arm-g1-videos](https://huggingface.co/datasets/angeloantu/robot-arm-g1-videos)
+  (the phone videos and the robot's tries)
+
+`scripts/download_models.py` fetches them to where the code expects them. The GUI downloads any controller it's
+missing when it starts, so for the GUI there is nothing to download by hand.
 
 ### Python
 
@@ -158,6 +168,7 @@ cd Robot_arm
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,pose]"      # pose = RTMW arm tracking for the side-by-side videos; optional
 pytest                            # check the install
+python scripts/download_models.py # the trained controllers -> runs/  (--vla: also the VLA; --videos: the videos)
 ```
 
 Without a display (servers), rendering needs `MUJOCO_GL=egl` (NVIDIA GPU) or `MUJOCO_GL=osmesa` (CPU).
@@ -197,8 +208,8 @@ python scripts/g1_gui.py
 4. **Run:** the robot works live. Drag the view to orbit, Shift+drag to pan and scroll to zoom, or switch to the
    front, side, top, head or wrist camera. A panel shows each task as it finishes and the result.
 
-The trained controllers are read from `runs/`. If a checkpoint isn't there, that option is greyed out and the
-hand-written controller is used instead.
+The trained controllers are read from `runs/`. Any that are missing are downloaded from Hugging Face the first time
+the GUI starts. Without a network connection, missing ones are greyed out and the hand-written controller is used.
 
 **Run the robot in simulation** with the hand-written experts (no training needed):
 
@@ -241,13 +252,18 @@ All commands and options are in [docs/README_FULL.md](docs/README_FULL.md).
 the Python section:
 
 ```bash
-docker run --rm -p 8766:8766 -v "$PWD/runs:/app/runs" robot_arm \
+docker run --rm -p 8766:8766 -v robot_arm_runs:/app/runs robot_arm \
     python scripts/g1_gui.py --host 0.0.0.0 --no-browser
 ```
 
-The `-v` option gives the container your trained controllers from `runs/`.
+The first start downloads the controllers from Hugging Face (66 MB). `-v robot_arm_runs:/app/runs` keeps them in a
+Docker volume, so later starts reuse them. To use controllers you trained yourself instead, mount your folder:
+`-v "$PWD/runs:/app/runs"`.
 
-**Run the robot in simulation** (videos are saved to `runs/` on your machine through the `-v` mount):
+**Run the robot in simulation** (videos are saved to `runs/` on your machine through the `-v` mount). To score the
+trained controllers, download them into the same volume first:
+`docker run --rm -v robot_arm_runs:/app/runs robot_arm python scripts/download_models.py`, then add
+`-v robot_arm_runs:/app/runs` and a `--policy` to the commands below.
 
 ```bash
 docker run --rm -e G1_HAND=shadow robot_arm \
@@ -273,7 +289,9 @@ With an NVIDIA GPU, use the `robot_arm:gpu` image and add `--gpus all -e MUJOCO_
 ## How I collected the dataset
 
 All videos were filmed on an iPhone with a printed marker sheet on the table, so the camera position and table
-size can be worked out. The cups are red and the cap is blue, so they are easy to find by colour.
+size can be worked out. The cups are red and the cap is blue, so they are easy to find by colour. The videos are on
+[Hugging Face](https://huggingface.co/datasets/angeloantu/robot-arm-g1-videos)
+(`python scripts/download_models.py --only-videos`).
 
 | Set | What it looked like | Problem | Result |
 |---|---|---|---|
@@ -508,4 +526,5 @@ balance, delays, camera errors) and retrained. See
 - [docs/README_FULL.md](docs/README_FULL.md): the full technical write-up (how each step works, all commands)
 - [docs/DECISIONS_LOG.md](docs/DECISIONS_LOG.md): every problem and decision along the way
 - [docs/RECORDING_PYRAMID.md](docs/RECORDING_PYRAMID.md): how to record your own videos
-- [sim_videos/](sim_videos/README.md): videos of the robot's tries, failures included
+- [Videos on Hugging Face](https://huggingface.co/datasets/angeloantu/robot-arm-g1-videos): the phone videos
+  (sets 1 and 3) and the robot's tries, failures included (`sim_videos/`)

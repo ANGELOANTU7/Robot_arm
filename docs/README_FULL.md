@@ -192,7 +192,7 @@ cup and the pyramid standing. Everything ran in this container (4 CPU cores, no 
 - Missed throws are followed by re-throws, about 0.2–0.25 per episode. Most failed throws don't end in a clean
   miss but with the pyramid knocked (the cap landing on the top cup, or the fingers hitting the cups while
   picking up a cap that lies next to them), a cap rolling off the table, or a pinch that never closes on it.
-- **Videos of the tries**, failures included: [`sim_videos/`](../sim_videos/README.md).
+- **Videos of the tries**, failures included: `sim_videos/` in the [videos dataset on Hugging Face](https://huggingface.co/datasets/angeloantu/robot-arm-g1-videos).
 
 ### Simulation shortcuts and limits, stated plainly
 
@@ -382,8 +382,10 @@ Two lessons from building this, both handled in the code:
 into `third_party/` (set `MENAGERIE_DIR` to use an existing checkout instead), and the MediaPipe models into
 `~/.cache/robot_arm/` (hand 7.8 MB, pose about 30 MB). MediaPipe 1.2.0 has only the Tasks API (no `mp.solutions`).
 
-**The 3rd video set** lives on the `dataset-2-videos` branch (about 1 GB, with a `MANIFEST.json` of each file's size
-and SHA-256): `git fetch origin dataset-2-videos && git worktree add ../dataset_2 dataset-2-videos`.
+**The videos** (sets 1 and 3, about 1.6 GB; set 3 has a `MANIFEST.json` of each file's size and SHA-256) are on
+[Hugging Face](https://huggingface.co/datasets/angeloantu/robot-arm-g1-videos):
+`python scripts/download_models.py --only-videos` puts them in `data/videos/`. The trained controllers come from
+`python scripts/download_models.py`.
 
 **Smoke test** before longer runs: `pytest -q`, then the hand-written expert on each cup with
 `G1_HAND=shadow python scripts/g1_evaluate.py --task place --stage 0 --episodes 16` (and `--stage 1`, `--stage 2`).
