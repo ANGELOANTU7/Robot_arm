@@ -191,6 +191,19 @@ The GPU image needs the NVIDIA Container Toolkit. The robot models are downloade
 The download saves to `runs/` and `data/` in your clone, so they stay after the container exits; every command in
 [How to run](#with-docker) mounts these two folders with the same `-v` options so the container finds them.
 
+## GUI preview
+
+The interactive GUI (`scripts/g1_gui.py`, see [How to run](#how-to-run)) in four steps:
+
+| 1. Choose a controller for each task | 2. Arrange the table |
+|---|---|
+| ![GUI step 1: controllers per task with perfect-sim and real-limits success rates](docs/gifs/gui1_controllers.gif) | ![GUI step 2: dragging the cups on a top view of the table, with reach warnings](docs/gifs/gui2_layout.gif) |
+| **3. Set the real-world limits** | **4. Watch the robot live** |
+| ![GUI step 3: switching on real-world limits, the disclaimer and the sliders](docs/gifs/gui3_limits.gif) | ![GUI step 4: the robot building the pyramid and throwing the cap while the camera is moved](docs/gifs/gui4_run.gif) |
+
+Step 4 runs at 4x speed and the GIF plays 1.5x faster than that; the camera is dragged, zoomed and switched
+between views while the robot works.
+
 ## How to run
 
 `--task` is `place`, `toss` or `full`. `--policy` takes `scripted` (the hand-written experts) or trained
