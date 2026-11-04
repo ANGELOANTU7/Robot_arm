@@ -400,13 +400,18 @@ cup up to 3 cm off-centre, so the top-cup row uses a layout where every success 
 
 | Task | Imitation | RL (PPO) | Diffusion |
 |---|---|---|---|
-| **Cup A** | ![](docs/gifs/cmp_c0_imit.gif)<br/>98% | ![](docs/gifs/cmp_c0_rl.gif)<br/>**100%** | — |
-| **Cup B** | ![](docs/gifs/cmp_c1_imit.gif)<br/>**69%** | ![](docs/gifs/cmp_c1_rl.gif)<br/>52% | — |
-| **Top cup** (turn over + place) | ![](docs/gifs/cmp_c2_imit.gif)<br/>**38%** | ![](docs/gifs/cmp_c2_rl.gif)<br/>35% | — |
+| **Cup A** | ![](docs/gifs/cmp_c0_imit.gif)<br/>98% | ![](docs/gifs/cmp_c0_rl.gif)<br/>**100%** | not trained: see below |
+| **Cup B** | ![](docs/gifs/cmp_c1_imit.gif)<br/>**69%** | ![](docs/gifs/cmp_c1_rl.gif)<br/>52% | not trained: see below |
+| **Top cup** (turn over + place) | ![](docs/gifs/cmp_c2_imit.gif)<br/>**38%** | ![](docs/gifs/cmp_c2_rl.gif)<br/>35% | not trained: see below |
 | **Throw** | ![](docs/gifs/cmp_t_bc.gif)<br/>5% | ![](docs/gifs/cmp_t_rl.gif)<br/>7% | ![](docs/gifs/cmp_t_dp.gif)<br/>**9%** |
 
 With real limits, RL is best on cup A, imitation on cup B and the top cup, and diffusion on the throw. With 48
 tries per cup task, gaps smaller than about 15–20 points could be chance; the largest is cup B (69% vs 52%).
+
+**Why there is no diffusion policy for the cups here:** in the default simulator (table a) diffusion placed the cups
+worse than imitation: cup B 85% against 100%, and the top cup 44% against 79%. So the chunked MLP was kept for
+the cups and diffusion only for the throw, where it was best, and only those two were retrained with real-world
+limits.
 
 ### What this means
 
