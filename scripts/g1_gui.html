@@ -55,6 +55,9 @@
   .cams { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
   .cams button { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; }
   .cams button.on { border-color: var(--accent); background: #1f2a3f; }
+  table.stats { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.stats th, table.stats td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  table.stats th { color: var(--muted); font-weight: 500; }
   ol.stages { list-style: none; padding: 0; margin: 0; }
   ol.stages li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
   ol.stages li .c { color: var(--muted); font-size: 12px; } ol.stages li.now { color: var(--accent); } ol.stages li.done .mk { color: var(--good); }
@@ -109,6 +112,13 @@
   <section id="s2">
     <h2>Real-world limits</h2>
     <p class="lead">Simulate the limits of real hardware, or keep the perfect simulator. Each comes with its own trained controllers.</p>
+    <div class="card" id="disclaimer" style="border-color:var(--warn); margin-bottom:18px">
+      <h3 style="color:var(--warn)">The robot may not succeed</h3>
+      <p class="note" style="margin:0 0 10px">These controllers work well in the perfect simulator but often fail with real-world limits: the robot
+        sways as it balances and knocks cups it has already placed. Results with the best learned controllers on new layouts:</p>
+      <table class="stats"><thead><tr><th>Setting</th><th>Pyramid built (cups A, B and top)</th><th>Whole task (cap in the cup)</th></tr></thead><tbody id="stats"></tbody></table>
+      <p class="note" style="margin:10px 0 0">Per task with real limits: cup A 100%, cup B 69%, top cup 38%, throw 9% (each tried on its own, from a ready-made start).</p>
+    </div>
     <div class="switch" id="realSwitch">
       <button data-on="0" class="on">Perfect simulator</button>
       <button data-on="1">Real-world limits</button>
@@ -125,7 +135,7 @@
         <div class="card">
           <h3>Sensing, delays and pushes</h3>
           <div id="sliders"></div>
-          <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="resetReal()">Reset to defaults</button><button class="btn ghost" onclick="zeroReal()">Turn all off</button></div>
+          <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="mildReal()">Random conditions off (default)</button><button class="btn ghost" onclick="fullReal()">All conditions on</button></div>
         </div>
       </div>
     </div>
@@ -178,19 +188,25 @@ document.querySelectorAll("#nav button").forEach(b => b.onclick = () => +b.datas
 
 // ---- 1. controllers ----
 function options(task) { const c = CFG.controllers[mode]; return task === 3 ? c.throw : c.cups; }
-function score(o, task) { return task === 3 ? o.score : o.scores[task]; }
+function rate(o, task, m) { const r = task === 3 ? o.rates[m] : o.rates[task][m]; return r === null || r === undefined ? "not trained" : r + "%"; }
+function rateLine(o, task) {
+  const part = (m, name) => `<span style="${m === mode ? "color:var(--text);font-weight:600" : ""}">${name} ${rate(o, task, m)}</span>`;
+  return `${part("perfect", "Perfect sim")} · ${part("real", "Real limits")}`;
+}
 function renderControllers() {
   $("modeNote").textContent = mode === "real" ? "Trained with real-world limits (change in step 3)" : "Trained in the perfect simulator (change in step 3)";
   $("ctl").innerHTML = CFG.tasks.map((name, t) => `<div class="card"><h3>${name}</h3>${options(t).map(o => {
     const best = CFG.controllers[mode].best[t] === o.id, sel = choice[t] === o.id;
     return `<label class="opt ${sel ? "sel" : ""} ${o.available ? "" : "off"}"><input type="radio" name="c${t}" value="${o.id}" ${sel ? "checked" : ""} ${o.available ? "" : "disabled"} onchange="choice[${t}]='${o.id}';renderControllers()">
-      <span><span class="name">${o.label}</span>${best ? '<span class="best">best</span>' : ""}<br><span class="meta">${score(o, t)}% success${o.available ? "" : " · checkpoint not in runs/"}</span></span></label>`;
+      <span><span class="name">${o.label}</span>${best ? '<span class="best">best</span>' : ""}<br><span class="meta">Success: ${rateLine(o, t)}${o.available ? "" : "<br>checkpoint not in runs/ (restart the GUI online to download it)"}</span></span></label>`;
   }).join("")}</div>`).join("");
 }
 function bestChoices() {
   choice = CFG.controllers[mode].best.map((id, t) => {
     const o = options(t).find(o => o.id === id);
-    return o && o.available ? id : "scripted";
+    if (o && o.available) return id;
+    const any = options(t).find(o => o.available);
+    return any ? any.id : null;
   });
 }
 
@@ -312,11 +328,13 @@ function renderReal() {
     <input type="range" min="${s.min}" max="${s.max}" step="${s.step}" value="${realValues[s.key]}" oninput="realValues['${s.key}']=+this.value;this.parentNode.querySelector('.v').textContent=this.value+' ${s.unit}'">
     <span class="v">${realValues[s.key]} ${s.unit}</span></div>`).join("");
 }
-function resetReal() { CFG.real.settings.forEach(s => realValues[s.key] = s.value); realGroups = new Set(CFG.real.groups.map(g => g.key)); renderReal(); }
-function zeroReal() { CFG.real.settings.forEach(s => realValues[s.key] = 0); realGroups = new Set(); renderReal(); }
+function fullReal() { CFG.real.settings.forEach(s => realValues[s.key] = s.full); realGroups = new Set(CFG.real.groups.map(g => g.key)); renderReal(); }
+function mildReal() { CFG.real.settings.forEach(s => realValues[s.key] = 0); realGroups = new Set(); renderReal(); }
 
 // ---- 4. run ----
 async function run() {
+  const missing = choice.map((c, t) => c ? null : CFG.tasks[t]).filter(Boolean);
+  if (missing.length) { alert(`No controller available for: ${missing.join(", ")}. Restart the GUI with a network connection to download them.`); return go(0); }
   go(3);
   $("wait").style.display = "grid"; $("wait").textContent = "Starting the simulator and loading the controllers…";
   $("outcome").style.display = "none";
@@ -361,7 +379,8 @@ async function poll() {
 }
 
 fetch("/config").then(r => r.json()).then(c => {
-  CFG = c; bestChoices(); renderControllers(); resetReal(); defaultLayout(); poll();
+  CFG = c; bestChoices(); renderControllers(); mildReal(); defaultLayout(); poll();
+  $("stats").innerHTML = c.real.stats.map(r => `<tr><td>${r.setting}</td><td>${r.pyramid}</td><td>${r.whole}</td></tr>`).join("");
 });
 </script>
 </body>

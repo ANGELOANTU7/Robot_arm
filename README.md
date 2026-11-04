@@ -205,17 +205,20 @@ for the 5-finger hand and `G1_REAL=1` for real-world limits.
 python scripts/g1_gui.py
 ```
 
-1. **Controllers:** for each task (cup A, cup B, top cup, throw) pick a controller. The best learned one is selected
-   and marked, and each shows its success rate.
+1. **Controllers:** for each task (cup A, cup B, top cup, throw) pick a learned controller. The best one is selected
+   and marked, and each shows its success rate in the perfect simulator and with real-world limits.
 2. **Table layout:** a top view of the table. Drag the three cups, the cap and the pyramid spot where you want them;
    the area the robot can reach is shaded, and the page warns about layouts it can't manage.
 3. **Real-world limits:** keep the perfect simulator, or turn the limits on and adjust them (camera errors, delays,
-   pushes, what varies between tries). Each setting has its own trained controllers, which are picked for you.
+   pushes, what varies between tries). Each setting has its own trained controllers, which are picked for you. With
+   limits on, the random conditions start switched off, and the page warns that the robot may not succeed: the best
+   learned controllers build the pyramid in 72% of runs in the perfect simulator, but in 12.5% with real limits
+   (6% with every condition on), and haven't completed the whole task there.
 4. **Run:** the robot works live. Drag the view to orbit, Shift+drag to pan and scroll to zoom, or switch to the
    front, side, top, head or wrist camera. A panel shows each task as it finishes and the result.
 
 The trained controllers are read from `runs/`. Any that are missing are downloaded from Hugging Face the first time
-the GUI starts. Without a network connection, missing ones are greyed out and the hand-written controller is used.
+the GUI starts. Without a network connection, missing ones are greyed out and can't be picked.
 
 **Run the robot in simulation** with the hand-written experts (no training needed):
 

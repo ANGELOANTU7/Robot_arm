@@ -9,6 +9,7 @@ real-world limits (G1_REAL, G1_REAL_SET) chosen on the page, since both are read
 It streams JPEG frames back, rendered from the camera the page asks for. Trained controllers are loaded from
 runs/. Missing ones are downloaded from Hugging Face when the GUI starts (scripts/download_models.py); a controller
 that is still missing (no network, or --no-download) is shown but can't be picked.
+With real-world limits on, the page starts with the random conditions off (only the fixed hardware limits).
 """
 
 import argparse
@@ -36,22 +37,18 @@ W, H = 800, 560
 CONTROLLERS = {
     "perfect": {
         "cups": [("imitation", "Imitation (chunked MLP)", "runs/chunk_6k_elbow/policy.pt", [100, 100, 79]),
-                 ("diffusion", "Diffusion policy", "runs/dp_6k_elbow/policy.pt", [100, 85, 44]),
-                 ("scripted", "Hand-written", "scripted", [100, 100, 88])],
+                 ("diffusion", "Diffusion policy", "runs/dp_6k_elbow/policy.pt", [100, 85, 44])],
         "throw": [("diffusion", "Diffusion policy", "runs/toss4k_dp_elbow/policy.pt", 61),
                   ("rl", "RL (PPO)", "runs/toss4k_ppo_small/policy_iter40.pt", 52),
-                  ("imitation", "Imitation (BC)", "runs/toss4k_bc/policy.pt", 40),
-                  ("scripted", "Hand-written", "scripted", 83)],
+                  ("imitation", "Imitation (BC)", "runs/toss4k_bc/policy.pt", 40)],
         "best": ["imitation", "imitation", "imitation", "diffusion"],
     },
     "real": {
         "cups": [("imitation", "Imitation (chunked MLP)", "runs/real_place_chunk/policy.pt", [98, 69, 38]),
-                 ("rl", "RL (PPO)", "runs/real_place_ppo/policy.pt", [100, 52, 35]),
-                 ("scripted", "Hand-written", "scripted", [98, 60, 21])],
+                 ("rl", "RL (PPO)", "runs/real_place_ppo/policy.pt", [100, 52, 35])],
         "throw": [("diffusion", "Diffusion policy", "runs/real2_toss_dp/policy.pt", 9),
                   ("rl", "RL (PPO)", "runs/real2_toss_ppo/policy.pt", 7),
-                  ("imitation", "Imitation (BC)", "runs/real2_toss_bc/policy.pt", 5),
-                  ("scripted", "Hand-written", "scripted", 12.5)],
+                  ("imitation", "Imitation (BC)", "runs/real2_toss_bc/policy.pt", 5)],
         "best": ["rl", "imitation", "imitation", "diffusion"],
     },
 }
@@ -75,9 +72,17 @@ REAL_FIXED = ["Real torque limits (e.g. wrist 5 Nm), torque drops near top speed
               "Motors heat up: weaker above 75 °C, stop at 90 °C",
               "The robot balances on its own feet and can fall", "Hand weighs 1.8 kg (Shadow Super Lite)"]
 
+# Whole-run results for the disclaimer on the real-world limits page, with the best learned controllers
+# (docs/DECISIONS_LOG.md). Real limits: 48 runs; "random conditions off" is the page's default setting.
+WHOLE_RUN_STATS = [
+    {"setting": "Perfect simulator", "pyramid": "72% (69/96)", "whole": "45% (43/96)"},
+    {"setting": "Real limits, random conditions off (default)", "pyramid": "12.5% (6/48)", "whole": "0%"},
+    {"setting": "Real limits, all conditions on", "pyramid": "6% (3/48)", "whole": "0%"},
+]
+
 
 def available(spec: str) -> bool:
-    return spec == "scripted" or (ROOT / spec).exists()
+    return (ROOT / spec).exists()
 
 
 def geometry(real: bool) -> dict:
@@ -114,12 +119,22 @@ def default_layout() -> dict:
             "pyramid": xy((env.layout.base_a + env.layout.base_b) / 2)}
 
 
+def rates(group: str, cid: str, task: int) -> dict:
+    """This kind of controller's success rate on `task` in each simulator (None: not trained there)."""
+    out = {}
+    for mode, c in CONTROLLERS.items():
+        sc = next((sc for i, _, _, sc in c[group] if i == cid), None)
+        out[mode] = sc[task] if isinstance(sc, list) else sc
+    return out
+
+
 def page_config() -> dict:
     ctl = {}
     for mode, c in CONTROLLERS.items():
-        ctl[mode] = {"cups": [{"id": i, "label": l, "available": available(s), "scores": sc} for i, l, s, sc in c["cups"]],
-                     "throw": [{"id": i, "label": l, "available": available(s), "score": sc}
-                               for i, l, s, sc in c["throw"]],
+        ctl[mode] = {"cups": [{"id": i, "label": l, "available": available(s), "rates": [rates("cups", i, t) for t in range(3)]}
+                              for i, l, s, _ in c["cups"]],
+                     "throw": [{"id": i, "label": l, "available": available(s), "rates": rates("throw", i, 0)}
+                               for i, l, s, _ in c["throw"]],
                      "best": c["best"]}
     from robot_arm.humanoid.real import RealSpec
 
@@ -128,20 +143,17 @@ def page_config() -> dict:
     for key, label, unit, scale, lo, hi, step in REAL_SETTINGS:
         v = getattr(spec, key)
         v = v[1] if isinstance(v, tuple) else v
-        settings.append({"key": key, "label": label, "unit": unit, "value": round(v / scale, 3), "min": lo, "max": hi,
+        settings.append({"key": key, "label": label, "unit": unit, "full": round(v / scale, 3), "min": lo, "max": hi,
                          "step": step})
     return {"tasks": TASKS, "controllers": ctl, "geometry": {"perfect": geometry(False), "real": geometry(True)},
             "layout": default_layout(),
             "real": {"settings": settings, "groups": [{"key": k, "label": l} for k, l in REAL_GROUPS],
-                     "fixed": REAL_FIXED}}
+                     "fixed": REAL_FIXED, "stats": WHOLE_RUN_STATS}}
 
 
 def spec_for(mode: str, task: int, cid: str) -> str:
     group = CONTROLLERS[mode]["throw" if task == 3 else "cups"]
-    for i, _, spec, _ in group:
-        if i == cid and available(spec):
-            return spec
-    return "scripted"
+    return next(spec for i, _, spec, _ in group if i == cid)
 
 
 def label_for(mode: str, task: int, cid: str) -> str:
@@ -173,20 +185,18 @@ def sim_worker(job: dict, out, cmds):
     import numpy as np
 
     from robot_arm.humanoid.envs import OBS_STAGE, G1PyramidEnv
-    from robot_arm.humanoid.scripted import PlaceExpert, TossExpert
     from robot_arm.policy import load_checkpoint
 
     env = G1PyramidEnv(task="full", render_mode="rgb_array", width=W, height=H)
     view = mujoco.Renderer(env.model, H, W)
     cache = {}
 
-    def load(spec, toss):
-        key = (spec, toss)
-        if key not in cache:
-            cache[key] = (TossExpert() if toss else PlaceExpert()) if spec == "scripted" else load_checkpoint(ROOT / spec)
-        return cache[key]
+    def load(spec):
+        if spec not in cache:
+            cache[spec] = load_checkpoint(ROOT / spec)
+        return cache[spec]
 
-    policies = [load(s, k == 3) for k, s in enumerate(job["specs"])]
+    policies = [load(s) for s in job["specs"]]
     lay = job["layout"]
     obs, _ = env.reset(seed=job["seed"], options={"supply": lay["supply"], "cap": lay["cap"],
                                                   "pyramid_center": lay["pyramid"]})
