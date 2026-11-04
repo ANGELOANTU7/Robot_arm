@@ -11,8 +11,9 @@ The heat numbers are not from Unitree, which does not publish them: `rated_frac`
 typical for this class of motor, and should be replaced by a measurement on the robot.
 """
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import mujoco
 import numpy as np
@@ -91,16 +92,17 @@ CONDITIONS = {  # each with its value in a perfect world
 }
 
 
-def real_spec(setting: str) -> RealSpec:
-    """G1_REAL: `1` every condition; `clean` none; `clean,camera,delay` only those, to see what each one costs."""
+def real_spec(setting: str, overrides: dict | None = None) -> RealSpec:
+    """G1_REAL: `1` every condition; `clean` none; `clean,camera,delay` only those, to see what each one costs.
+    `overrides` (G1_REAL_SET, JSON) then sets single RealSpec fields, e.g. {"camera_bias": 0.005}."""
     names = setting.split(",")
-    if names[0] != "clean":
-        return RealSpec()
-    off = {k: v for name, values in CONDITIONS.items() if name not in names for k, v in values.items()}
-    return RealSpec(**off)
+    off = {} if names[0] != "clean" else {k: v for name, values in CONDITIONS.items() if name not in names
+                                          for k, v in values.items()}
+    over = {k: tuple(v) if isinstance(v, list) else v for k, v in (overrides or {}).items()}
+    return replace(RealSpec(**off), **over)
 
 
-REAL = real_spec(os.environ.get("G1_REAL", "1"))
+REAL = real_spec(os.environ.get("G1_REAL", "1"), json.loads(os.environ.get("G1_REAL_SET", "{}")))
 
 
 class RealBody:

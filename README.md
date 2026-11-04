@@ -43,10 +43,12 @@ not yet completed the whole task. Nothing has been run on a real robot yet.
 - **Dataset generation:** many layouts in parallel, task mix, noise injection (DART) for recovery examples,
   only successful stages kept, and DAgger for extra data.
 - **Several learned controllers:** behavior cloning, a chunked MLP, a diffusion policy and PPO fine-tuning;
-  a vision-language-action model (SmolVLA + RL) in progress.
+  a vision-language-action model (SmolVLA, with and without RL) tested with real-world limits.
 - **Two hands:** the Dex3 (3 fingers) and the Shadow hand (5 fingers), switched with `G1_HAND`.
 - **Real-world hardware limits mode** (`G1_REAL=1`): torque and speed limits, gravity, motor heat, balance on the
   robot's own feet, hand weight, delays, camera and encoder noise, and per-try randomisation.
+- **Interactive GUI** (`scripts/g1_gui.py`): pick a controller per task, arrange the table, set the real-world
+  limits and watch the robot live from any angle, in the browser.
 - **Evaluation and videos:** success rates on unseen layouts, a video of every try (`TRY_VIDEOS`), and a live
   browser view of many tries at once.
 - **Tests** against synthetic ground truth.
@@ -105,8 +107,9 @@ video with the tracking drawn on it. Right: the robot doing the same movement.
   chunk), which can choose one clean way out when several are possible. It is used as is, without the RL step.
 - **RL (PPO).** Starts from the imitation policy and improves it by trial and error in many simulators at once,
   with a fading term that keeps it close to the demos so it doesn't forget them early on.
-- **In progress: VLA.** A vision-language-action model (SmolVLA) that sees the robot's cameras and a spoken
-  instruction per stage, with PPO adding a small correction on top.
+- **VLA.** A vision-language-action model (SmolVLA) that sees the robot's cameras and a spoken instruction per
+  stage, with PPO adding a small correction on top. Tested with real-world limits only; see
+  [Results](#5-learned-controllers-compared-per-task).
 
 ## Repository structure
 
@@ -125,12 +128,13 @@ Robot_arm/
 │   │   ├── dataset.py              dataset generation (task mix, noise, DAgger)
 │   │   ├── real.py                 real-world hardware limits (G1_REAL=1)
 │   │   ├── evaluate.py, trylog.py  evaluation and per-try videos
-│   │   └── vla.py, vla_model.py    vision-language-action model (in progress)
+│   │   └── vla.py, vla_model.py    vision-language-action model (SmolVLA)
 │   ├── bc.py, diffusion.py     behavior cloning; chunked MLP and diffusion policy
 │   ├── ppo.py, policy.py       PPO fine-tuning; actor-critic network
 │   ├── tasks.py                task registry used by training and evaluation
 │   └── *.py (others)           the Panda ball-in-cup proof of concept
-├── scripts/                    command-line entry points (g1_* for the humanoid, train_* for training)
+├── scripts/                    command-line entry points (g1_* for the humanoid, train_* for training);
+│                               g1_gui.py + g1_gui.html is the interactive GUI
 ├── tests/                      unit and end-to-end tests
 ├── docs/                       write-ups, recording guides, marker sheet, GIFs and diagrams
 ├── sim_videos/                 videos of the robot's tries, failures included
@@ -143,7 +147,7 @@ Robot_arm/
 
 ## Installation
 
-### Option 1: Python (pip)
+### Python
 
 Needs Python 3.10+ (tested on 3.12) and `git` (the robot models are downloaded from MuJoCo Menagerie the first
 time they are used).
@@ -156,28 +160,45 @@ pip install -e ".[dev,pose]"      # pose = RTMW arm tracking for the side-by-sid
 pytest                            # check the install
 ```
 
-Without a display (servers, containers), rendering needs `MUJOCO_GL=egl` (NVIDIA GPU) or `MUJOCO_GL=osmesa` (CPU).
+Without a display (servers), rendering needs `MUJOCO_GL=egl` (NVIDIA GPU) or `MUJOCO_GL=osmesa` (CPU).
 
-### Option 2: Docker
-
-```bash
-docker build -t robot_arm .
-docker run --rm -it robot_arm pytest                                          # check the image
-docker run --rm -it robot_arm python scripts/g1_evaluate.py --task full --episodes 20
-```
-
-The default image uses CPU-only PyTorch. With an NVIDIA GPU (for training and faster rendering; needs the
-NVIDIA Container Toolkit), build the CUDA version instead:
+### Docker
 
 ```bash
-docker build --build-arg TORCH_INDEX=https://pypi.org/simple -t robot_arm:gpu .
-docker run --rm -it --gpus all -e MUJOCO_GL=egl \
-    -v "$PWD/data:/app/data" -v "$PWD/runs:/app/runs" robot_arm:gpu bash
+git clone https://github.com/ANGELOANTU7/Robot_arm.git
+cd Robot_arm
+docker build -t robot_arm .                                                    # CPU-only PyTorch
+docker build --build-arg TORCH_INDEX=https://pypi.org/simple -t robot_arm:gpu .   # or: CUDA PyTorch, for an NVIDIA GPU
+docker run --rm robot_arm pytest                                               # check the image
 ```
 
-The `-v` options keep your videos, datasets and trained models on your machine instead of inside the container.
+The GPU image needs the NVIDIA Container Toolkit. The robot models are downloaded into the image while it builds.
 
 ## How to run
+
+`--task` is `place`, `toss` or `full`. `--policy` takes `scripted` (the hand-written experts) or trained
+checkpoints, e.g. `--policy place=runs/place_chunk/policy.pt,toss=runs/toss_dp/policy.pt`. Set `G1_HAND=shadow`
+for the 5-finger hand and `G1_REAL=1` for real-world limits.
+
+### With Python
+
+**Interactive GUI.** Opens in your browser:
+
+```bash
+python scripts/g1_gui.py
+```
+
+1. **Controllers:** for each task (cup A, cup B, top cup, throw) pick a controller. The best learned one is selected
+   and marked, and each shows its success rate.
+2. **Table layout:** a top view of the table. Drag the three cups, the cap and the pyramid spot where you want them;
+   the area the robot can reach is shaded, and the page warns about layouts it can't manage.
+3. **Real-world limits:** keep the perfect simulator, or turn the limits on and adjust them (camera errors, delays,
+   pushes, what varies between tries). Each setting has its own trained controllers, which are picked for you.
+4. **Run:** the robot works live. Drag the view to orbit, Shift+drag to pan and scroll to zoom, or switch to the
+   front, side, top, head or wrist camera. A panel shows each task as it finishes and the result.
+
+The trained controllers are read from `runs/`. If a checkpoint isn't there, that option is greyed out and the
+hand-written controller is used instead.
 
 **Run the robot in simulation** with the hand-written experts (no training needed):
 
@@ -187,9 +208,6 @@ G1_HAND=shadow python scripts/g1_evaluate.py --task full --episodes 4 --videos r
 G1_HAND=shadow python scripts/g1_view.py --task full                            # watch it (needs a display)
 G1_HAND=shadow G1_REAL=1 python scripts/g1_evaluate.py --task full --episodes 20   # with real-world limits
 ```
-
-`--task` is `place`, `toss` or `full`; `--policy` takes `scripted` or trained checkpoints, e.g.
-`--policy place=runs/place_chunk/policy.pt,toss=runs/toss_dp/policy.pt`.
 
 **The whole pipeline from your own videos:**
 
@@ -216,6 +234,41 @@ python scripts/g1_evaluate.py --task full --episodes 96 --policy place=runs/plac
 
 No videos? `python scripts/g1_make_synthetic_human.py --n 10` makes synthetic human clips to try steps 3–5 on.
 All commands and options are in [docs/README_FULL.md](docs/README_FULL.md).
+
+### With Docker
+
+**Interactive GUI.** Start it, then open <http://localhost:8766> in your browser. It's the same four steps as in
+the Python section:
+
+```bash
+docker run --rm -p 8766:8766 -v "$PWD/runs:/app/runs" robot_arm \
+    python scripts/g1_gui.py --host 0.0.0.0 --no-browser
+```
+
+The `-v` option gives the container your trained controllers from `runs/`.
+
+**Run the robot in simulation** (videos are saved to `runs/` on your machine through the `-v` mount):
+
+```bash
+docker run --rm -e G1_HAND=shadow robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 20                       # success rate on new layouts
+docker run --rm -e G1_HAND=shadow -v "$PWD/runs:/app/runs" robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 4 --videos runs/videos   # save mp4s
+docker run --rm -e G1_HAND=shadow -e G1_REAL=1 robot_arm \
+    python scripts/g1_evaluate.py --task full --episodes 20                       # with real-world limits
+```
+
+The desktop viewer (`g1_view.py`) needs a display, so it isn't available in the container; use the GUI above.
+
+**The whole pipeline from your own videos:** open a shell in the container with your clips, data and models
+mounted, then run steps 2–5 from the Python section above unchanged:
+
+```bash
+docker run --rm -it -e G1_HAND=shadow \
+    -v "$PWD/my_videos:/app/my_videos" -v "$PWD/data:/app/data" -v "$PWD/runs:/app/runs" robot_arm bash
+```
+
+With an NVIDIA GPU, use the `robot_arm:gpu` image and add `--gpus all -e MUJOCO_GL=egl` to any `docker run` above.
 
 ## How I collected the dataset
 
@@ -345,6 +398,8 @@ Two tables: one in the default (perfect) simulator, one with real-world limits o
 - **Imitation**: copies the robot demos made from my videos (a chunked MLP for the cups, BC for the throw).
 - **RL (PPO)**: the imitation policy improved by trial and error.
 - **Diffusion**: a diffusion policy.
+- **VLA**: a vision-language-action model (SmolVLA) that sees the robot's head and wrist cameras and gets a spoken
+  instruction per stage; trained only with real-world limits.
 
 Each row uses the same layout for every controller. The percentage under each GIF is its success rate over 48
 tries (cups) or 96 tries (throw); the best in each row is in bold. The GIF shows one try, so it can succeed where
@@ -354,28 +409,55 @@ the percentage is low, or fail where it is high.
 
 | Task | Imitation | RL (PPO) | Diffusion |
 |---|---|---|---|
-| **Cup A** | ![](docs/gifs/sim_d0_imit.gif)<br/>**100%** | not trained | ![](docs/gifs/sim_d0_dp.gif)<br/>**100%** |
-| **Cup B** | ![](docs/gifs/sim_d1_imit.gif)<br/>**100%** | not trained | ![](docs/gifs/sim_d1_dp.gif)<br/>85% |
-| **Top cup** (turn over + place) | ![](docs/gifs/sim_d2_imit.gif)<br/>**79%** | not trained | ![](docs/gifs/sim_d2_dp.gif)<br/>44% |
+| **Cup A** | ![](docs/gifs/sim_d0_imit.gif)<br/>**100%** | not trained: imitation is already at 100% | ![](docs/gifs/sim_d0_dp.gif)<br/>**100%** |
+| **Cup B** | ![](docs/gifs/sim_d1_imit.gif)<br/>**100%** | not trained: imitation is already at 100% | ![](docs/gifs/sim_d1_dp.gif)<br/>85% |
+| **Top cup** (turn over + place) | ![](docs/gifs/sim_d2_imit.gif)<br/>**79%** | not trained: see below | ![](docs/gifs/sim_d2_dp.gif)<br/>44% |
 | **Throw** | ![](docs/gifs/sim_dt_bc.gif)<br/>40% | ![](docs/gifs/sim_dt_rl.gif)<br/>52% | ![](docs/gifs/sim_dt_dp.gif)<br/>**61%** |
 
 In the default simulator imitation is best at placing cups. On the throw, RL and diffusion both improve on plain
 imitation, and diffusion is best.
+
+**Why there is no RL for the cups here:**
+
+- **Little to gain.** Imitation already places cup A and cup B every time, and the top cup 79% of the time.
+- **The throw needed it more.** Plain imitation threw the cap in only 40% of tries, so the RL work went there.
+- **The best cup policy can't be fine-tuned by RL as it stands.** It plans 16 moves at a time (chunked MLP), and the
+  PPO code here only fine-tunes policies that choose one move at a time. RL for the cups would have had to start
+  from a weaker one-move policy.
+- **When it was tried with real-world limits, it didn't help.** See table b): RL scored 100%, 52% and 35% on the
+  cups against imitation's 98%, 69% and 38%.
+
+**Why there is no VLA here:** it was trained directly for the robot with real-world limits (its demos were made
+there), since the point was to see whether a camera-based controller could cope with a realistic robot.
 
 #### b) With real-world limits
 
 Filmed from the front, so you can see whether the top cup sits in the middle. The success check accepts a top
 cup up to 3 cm off-centre, so the top-cup row uses a layout where every success is centred (within 1 cm).
 
-| Task | Imitation | RL (PPO) | Diffusion |
-|---|---|---|---|
-| **Cup A** | ![](docs/gifs/cmp_c0_imit.gif)<br/>98% | ![](docs/gifs/cmp_c0_rl.gif)<br/>**100%** | — |
-| **Cup B** | ![](docs/gifs/cmp_c1_imit.gif)<br/>**69%** | ![](docs/gifs/cmp_c1_rl.gif)<br/>52% | — |
-| **Top cup** (turn over + place) | ![](docs/gifs/cmp_c2_imit.gif)<br/>**38%** | ![](docs/gifs/cmp_c2_rl.gif)<br/>35% | — |
-| **Throw** | ![](docs/gifs/cmp_t_bc.gif)<br/>5% | ![](docs/gifs/cmp_t_rl.gif)<br/>7% | ![](docs/gifs/cmp_t_dp.gif)<br/>**9%** |
+| Task | Imitation | RL (PPO) | Diffusion | VLA |
+|---|---|---|---|---|
+| **Cup A** | ![](docs/gifs/cmp_c0_imit.gif)<br/>98% | ![](docs/gifs/cmp_c0_rl.gif)<br/>**100%** | not trained: see below | ![](docs/gifs/cmp_c0_vla.gif)<br/>69% |
+| **Cup B** | ![](docs/gifs/cmp_c1_imit.gif)<br/>**69%** | ![](docs/gifs/cmp_c1_rl.gif)<br/>52% | not trained: see below | ![](docs/gifs/cmp_c1_vla.gif)<br/>25% |
+| **Top cup** (turn over + place) | ![](docs/gifs/cmp_c2_imit.gif)<br/>**38%** | ![](docs/gifs/cmp_c2_rl.gif)<br/>35% | not trained: see below | ![](docs/gifs/cmp_c2_vla.gif)<br/>19% |
+| **Throw** | ![](docs/gifs/cmp_t_bc.gif)<br/>5% | ![](docs/gifs/cmp_t_rl.gif)<br/>7% | ![](docs/gifs/cmp_t_dp.gif)<br/>**9%** | ![](docs/gifs/cmp_t_vla.gif)<br/>6% |
 
 With real limits, RL is best on cup A, imitation on cup B and the top cup, and diffusion on the throw. With 48
 tries per cup task, gaps smaller than about 15–20 points could be chance; the largest is cup B (69% vs 52%).
+
+**Why there is no diffusion policy for the cups here:** in the default simulator (table a) diffusion placed the cups
+worse than imitation: cup B 85% against 100%, and the top cup 44% against 79%. So the chunked MLP was kept for
+the cups and diffusion only for the throw, where it was best, and only those two were retrained with real-world
+limits.
+
+**The VLA is behind the other learned controllers on every cup task, and level with them on the throw (6% against
+5–9%, too close to separate).** It has to judge where the cups are from its
+camera images, which is less precise than the position estimate the others get: on cup B it knocked cup A over in
+28 of 48 tries. The first version, which had to work from the images alone, did worse still (cup A 33%, cup B 8%,
+top cup 12.5%, throw 0%); giving it the same position estimate as the others brought it to the numbers above.
+Adding RL on top (a small correction to its moves, trained with PPO) did not help: on cup B the best version
+placed 19% against 23% for the VLA alone in the same test, and on the throw it almost never succeeded, so RL had
+nothing to learn from. None of the controllers, VLA included, has completed the whole task with real limits.
 
 ### What this means
 
