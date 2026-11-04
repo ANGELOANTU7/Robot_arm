@@ -375,13 +375,23 @@ the percentage is low, or fail where it is high.
 
 | Task | Imitation | RL (PPO) | Diffusion |
 |---|---|---|---|
-| **Cup A** | ![](docs/gifs/sim_d0_imit.gif)<br/>**100%** | not trained | ![](docs/gifs/sim_d0_dp.gif)<br/>**100%** |
-| **Cup B** | ![](docs/gifs/sim_d1_imit.gif)<br/>**100%** | not trained | ![](docs/gifs/sim_d1_dp.gif)<br/>85% |
-| **Top cup** (turn over + place) | ![](docs/gifs/sim_d2_imit.gif)<br/>**79%** | not trained | ![](docs/gifs/sim_d2_dp.gif)<br/>44% |
+| **Cup A** | ![](docs/gifs/sim_d0_imit.gif)<br/>**100%** | not trained: imitation is already at 100% | ![](docs/gifs/sim_d0_dp.gif)<br/>**100%** |
+| **Cup B** | ![](docs/gifs/sim_d1_imit.gif)<br/>**100%** | not trained: imitation is already at 100% | ![](docs/gifs/sim_d1_dp.gif)<br/>85% |
+| **Top cup** (turn over + place) | ![](docs/gifs/sim_d2_imit.gif)<br/>**79%** | not trained: see below | ![](docs/gifs/sim_d2_dp.gif)<br/>44% |
 | **Throw** | ![](docs/gifs/sim_dt_bc.gif)<br/>40% | ![](docs/gifs/sim_dt_rl.gif)<br/>52% | ![](docs/gifs/sim_dt_dp.gif)<br/>**61%** |
 
 In the default simulator imitation is best at placing cups. On the throw, RL and diffusion both improve on plain
 imitation, and diffusion is best.
+
+**Why there is no RL for the cups here:**
+
+- **Little to gain.** Imitation already places cup A and cup B every time, and the top cup 79% of the time.
+- **The throw needed it more.** Plain imitation threw the cap in only 40% of tries, so the RL work went there.
+- **The best cup policy can't be fine-tuned by RL as it stands.** It plans 16 moves at a time (chunked MLP), and the
+  PPO code here only fine-tunes policies that choose one move at a time. RL for the cups would have had to start
+  from a weaker one-move policy.
+- **When it was tried with real-world limits, it didn't help.** See table b): RL scored 100%, 52% and 35% on the
+  cups against imitation's 98%, 69% and 38%.
 
 #### b) With real-world limits
 
